@@ -13,6 +13,7 @@ ser sobrescritas em ``Narrative.conclusoes`` depois que o grupo ler os resultado
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -105,8 +106,9 @@ class Narrative:
             "Uma segunda passagem dedicada só a limitacao, sobre as janelas de pista de "
             "limitação (a entrada já as traz; o modelo de 3B não as usa na ficha completa).",
             "Modelo maior — Qwen2.5-7B em 4 bits ou um modelo por API — nas mesmas 19 fichas.",
-            'Instrução explícita "não copie os exemplos" e medir se o vazamento do few-shot '
-            "some; exemplos em domínio distante não bastaram.",
+            'O prompt já diz "não copie o conteúdo dos exemplos" e isso não impediu o vazamento; '
+            "testar exemplos-esqueleto (campos com marcadores em vez de valores) e medir se o "
+            "vazamento some sem perder a fidelidade que o few-shot trouxe.",
             "Gabarito manual de limitacao em 5 artigos, para separar abstenção de omissão.",
         ]
     )
@@ -117,6 +119,12 @@ class Narrative:
     """Frase "antes × depois" da seleção (ver :func:`before_after_sentence`), anexada a 4.4c."""
     nota_limitacao: str = ""
     """Frase sobre ``limitacao`` null (gabarito, heurística), anexada à conclusão de 4.4c."""
+    nota_temperatura: str = ""
+    """Frase anexada à conclusão de 4.4d (ex.: como o subconjunto foi escolhido)."""
+    nota_custo: str = ""
+    """Frase anexada ao comentário do custo (ex.: por que uma execução tem menos chamadas)."""
+    nota_nao_defensaveis: str = ""
+    """Parágrafo após a tabela de fichas não defensáveis (o que a regra não vê e a leitura viu)."""
     destaques_preferidos: list[str] = field(default_factory=list)
     """Prefixos de arquivo a destacar primeiro (ex.: ``["08_Leka", "06_Barnes"]``)."""
     destaque: str | None = None
@@ -493,37 +501,43 @@ def temperature_block(summary: AuditSummary) -> AuditBlock:
     if tr is None:
         raise ValueError("Relatório exige a verificação de temperatura (4.4d).")
     t0, ta = temp(tr.temperature_t0), temp(tr.temperature_alt)
+    n = len(tr.arquivos)
     numeros = {
-        "subconjunto": f"{len(tr.arquivos)} artigos",
+        "subconjunto": f"{n} artigos",
         "JSON válido de primeira": (
             f"t={t0}: {pct(tr.rate_json_valid_first_try_t0)} · "
             f"t={ta}: {pct(tr.rate_json_valid_first_try_alt)}"
         ),
         "fidelidade": f"t={t0}: {pct(tr.rate_fidelity_t0)} · t={ta}: {pct(tr.rate_fidelity_alt)}",
+        "página correta": (
+            f"t={t0}: {_count(tr.stats_t0.rate_page_ok, n)} · "
+            f"t={ta}: {_count(tr.stats_alt.rate_page_ok, n)}"
+        ),
         "fichas idênticas": f"{tr.diff.n_identical}/{tr.diff.n_pairs}",
     }
     if tr.escolha_t0_se_sustenta:
         conclusao = f"A escolha de t={t0} se sustenta: t={ta} não melhora validade nem fidelidade."
     else:
         conclusao = (
-            f"Pelo critério declarado, t={t0} não se sustenta neste subconjunto: t={ta} teve "
-            f"fidelidade {pct(tr.rate_fidelity_alt)} vs {pct(tr.rate_fidelity_t0)} em t={t0}."
+            f"Pelo critério declarado (JSON válido, depois fidelidade), t={t0} perde neste "
+            f"subconjunto: fidelidade {pct(tr.rate_fidelity_t0)} vs {pct(tr.rate_fidelity_alt)} "
+            f"em t={ta}."
         )
         erros_t0 = _t0_errors(summary, tr.arquivos)
         if erros_t0:
-            conclusao += f" Erro(s) em t={t0}: {erros_t0}."
-    n = len(tr.arquivos)
+            conclusao += f" A diferença vem de: {erros_t0}."
+        if tr.stats_t0.rate_page_ok > tr.stats_alt.rate_page_ok:
+            conclusao += (
+                " Já a página correta, o critério que decidiu a 4.4c, favorece "
+                f"t={t0}: {_count(tr.stats_t0.rate_page_ok, n)} vs "
+                f"{_count(tr.stats_alt.rate_page_ok, n)}; pela regra de confiança, t={ta} "
+                "geraria mais fichas BAIXA."
+            )
     if n < SMALL_SUBSET:
-        estab = summary.stability.diff if summary.stability else None
-        manter = (
-            f" Mantemos t={t0} pela estabilidade ({estab.n_identical}/{estab.n_pairs} fichas "
-            "idênticas entre repetições)"
-            if estab is not None
-            else f" Mantemos t={t0}"
-        )
         conclusao += (
-            f" Com n={n} artigos, a diferença não sustenta conclusão.{manter} e reportamos o "
-            "resultado como está."
+            f" Com n={n} artigos nada disso é conclusivo; mantemos t={t0} pela página correta e "
+            "porque a saída determinística deixa a estabilidade (b) sem ruído de amostragem, e "
+            "reportamos o resultado como está."
         )
     return AuditBlock("d) Efeito da temperatura", numeros, conclusao)
 
@@ -626,11 +640,52 @@ def _cost_row(label: str, rep: CostReport) -> dict[str, Any]:
     }
 
 
+_LEAK_COPY = re.compile(r"^campo (\S+) copiado do exemplo few-shot \(similaridade ([\d.]+)\)$")
+_LEAK_TERMS = re.compile(
+    r"^campo (\S+) contém (.+?), termos? do exemplo few-shot ausentes? do texto enviado$"
+)
+
+
+def compact_motivos(motivos: Sequence[str]) -> list[str]:
+    """Junta os motivos de vazamento (um por campo) em dois, para a tabela do PDF caber.
+
+    A lista completa continua na coluna ``motivos_confianca`` do CSV/XLSX.
+    """
+    copies: list[tuple[str, float]] = []
+    terms: list[tuple[str, str]] = []
+    rest: list[str] = []
+    for m in motivos:
+        if mc := _LEAK_COPY.match(m):
+            copies.append((mc.group(1), float(mc.group(2))))
+        elif mt := _LEAK_TERMS.match(m):
+            terms.append((mt.group(1), mt.group(2)))
+        else:
+            rest.append(m)
+    out: list[str] = []
+    if copies:
+        sims = [s for _, s in copies]
+        faixa = f"{min(sims):.2f}" if min(sims) == max(sims) else f"{min(sims):.2f}–{max(sims):.2f}"
+        campos = ", ".join(c for c, _ in copies)
+        plural = "s" if len(copies) > 1 else ""
+        out.append(
+            f"campo{plural} {campos} copiado{plural} do exemplo few-shot (similaridade {faixa})"
+        )
+    if terms:
+        vistos: list[str] = []
+        for _, t in terms:
+            vistos += [x.strip() for x in t.split(",") if x.strip() not in vistos]
+        out.append(
+            f"termos do exemplo few-shot ausentes do texto enviado em "
+            f"{', '.join(c for c, _ in terms)}: {', '.join(dict.fromkeys(vistos))}"
+        )
+    return out + rest
+
+
 def nao_defensaveis_table(summary: AuditSummary) -> pd.DataFrame:
-    """``arquivo, motivos`` das fichas com confiança BAIXA."""
+    """``arquivo, motivos`` das fichas com confiança BAIXA (motivos de vazamento compactados)."""
     return pd.DataFrame(
         [
-            {"arquivo": f.arquivo, "motivos": "; ".join(f.motivos)}
+            {"arquivo": f.arquivo, "motivos": "; ".join(compact_motivos(f.motivos))}
             for f in summary.nao_defensaveis()
         ],
         columns=["arquivo", "motivos"],
@@ -937,6 +992,8 @@ def build_report_content(
     for extra in (nar.antes_depois, nar.nota_limitacao):
         if extra:
             blocks.entrada.conclusao += f" {extra}"
+    if nar.nota_temperatura:
+        blocks.temperatura.conclusao += f" {nar.nota_temperatura}"
     dist = summary.confidence_distribution
     # O texto fixo de calibração da regra é um instantâneo; no relatório vale o calculado
     # a partir destes dados (``calibration_sentence``), para não haver dois números.
@@ -951,6 +1008,8 @@ def build_report_content(
     custo = cost_section(cost, cost_per_run)
     if "custo" in over:
         custo.comentario = over["custo"]
+    if nar.nota_custo:
+        custo.comentario += f" {nar.nota_custo}"
     return ReportContent(
         titulo=nar.titulo,
         integrantes=list(integrantes),
@@ -968,6 +1027,7 @@ def build_report_content(
         resultados_auditoria=blocks,
         regra_confianca=regra,
         fichas_nao_defensaveis=nao_defensaveis_table(summary),
+        nota_nao_defensaveis=nar.nota_nao_defensaveis,
         custo=custo,
         o_que_faria_diferente=list(nar.o_que_faria_diferente),
         declaracao_uso_ia=nar.declaracao_uso_ia,

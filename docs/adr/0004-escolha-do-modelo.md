@@ -67,3 +67,14 @@ então `temperature=0` é quase — mas não garantidamente — determinística.
   é testada sem `torch`, e a geração é testada com tokenizador/modelo falsos.
 - O modo de ensaio (`FICHA_MODEL_BACKEND=fake`) roda o pipeline inteiro sem GPU antes de
   gastar a cota do Colab.
+
+## Onde rodou de fato (2026-09-23)
+
+As sete execuções em `data/runs` rodaram em **Apple Silicon (MPS), float16, sem quantização**,
+não na T4 do Colab (commits `1278227` e `17366be`). A escolha do modelo continua a mesma e a
+precisão declarada (fp16) também; o que muda é a declaração: o `manifest.json` de cada
+execução passa a gravar `dispositivo` (nos manifests anteriores o campo foi acrescentado a
+posteriori, com nota dizendo isso), e o relatório declara o hardware a partir do manifest da
+execução principal, não do hardware da sessão em que o notebook é aberto. Reexecutar em CUDA
+pode mudar a saída gulosa em empates numéricos; por isso o notebook entregue reaproveita as
+saídas brutas gravadas, e `FICHA_REUSAR=0` refaz tudo no hardware disponível.

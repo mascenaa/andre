@@ -95,10 +95,22 @@ def test_notebook_runs_end_to_end_in_rehearsal_mode(tmp_path: Path, monkeypatch)
 
 @pytest.mark.skipif(not (ROOT / "notebooks").exists(), reason="sem diretório de notebooks")
 def test_committed_notebook_is_current() -> None:
-    """O .ipynb versionado tem a mesma estrutura que o gerador produz (não foi editado à mão)."""
-    committed = ROOT / "notebooks" / "AtividadeI_SOBRENOMES.ipynb"
-    if not committed.exists():
+    """O .ipynb versionado tem a mesma estrutura que o gerador produz (não foi editado à mão).
+
+    Os integrantes são lidos da célula de setup do próprio notebook (``INTEGRANTES = [...]``).
+    """
+    import ast
+    import re
+
+    committed = sorted((ROOT / "notebooks").glob("AtividadeI_*.ipynb"))
+    if not committed:
         pytest.skip("notebook ainda não gerado")
-    fresh = [c.source for c in _builder().cells([])]
-    current = [c.source for c in nbformat.read(committed, as_version=4).cells]
-    assert current == fresh, "rode `make notebook` para regenerar o .ipynb"
+    for path in committed:
+        nb = nbformat.read(path, as_version=4)
+        setup = next(c.source for c in nb.cells if c.cell_type == "code")
+        m = re.search(r"^INTEGRANTES = (\[.*\])$", setup, re.M)
+        assert m, "célula de setup sem INTEGRANTES"
+        integrantes = ast.literal_eval(m.group(1))
+        fresh = [c.source for c in _builder().cells(integrantes)]
+        current = [c.source for c in nb.cells]
+        assert current == fresh, f"rode `make notebook` para regenerar {path.name}"

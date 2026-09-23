@@ -46,6 +46,12 @@
       "n_chunks_selected": 10
     }
   },
+  "dispositivo": {
+    "tipo": "mps",
+    "nome": "Apple Silicon (MPS)",
+    "dtype": "float16",
+    "nota": "registrado a posteriori em 2026-09-23: nesta versão do runner o manifest ainda não gravava o dispositivo. As execuções rodaram em Apple Silicon (MPS, float16, sem quantização) — ver commits 1278227 e 17366be — e não na T4 do Colab."
+  },
   "geracao": {
     "temperature": 0.7,
     "max_new_tokens": 1024,

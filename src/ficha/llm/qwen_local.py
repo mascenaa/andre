@@ -145,10 +145,14 @@ def describe_gpu() -> dict[str, Any] | None:
     except ImportError:
         return None
     if not torch.cuda.is_available():
+        mps = getattr(torch.backends, "mps", None)
+        if mps is not None and mps.is_available():
+            return {"nome": "Apple Silicon (MPS)", "tipo": "mps", "torch": torch.__version__}
         return None
     free_b, total_b = torch.cuda.mem_get_info()
     return {
         "nome": torch.cuda.get_device_name(0),
+        "tipo": "cuda",
         "memoria_total_gb": round(total_b / 1e9, 2),
         "memoria_livre_gb": round(free_b / 1e9, 2),
         "cuda": torch.version.cuda,
@@ -191,6 +195,29 @@ class QwenLocalClient:
     @property
     def loaded(self) -> bool:
         return self._model is not None
+
+    @property
+    def device_info(self) -> dict[str, Any]:
+        """Hardware e precisão em que o modelo roda — vai para o ``manifest.json`` (Seção 4.3).
+
+        Resolvido sem carregar o modelo: CUDA se houver GPU, senão MPS no Apple Silicon,
+        senão CPU (float32). ``device`` explícito prevalece.
+        """
+        gpu = describe_gpu()
+        if self.device is not None:
+            tipo = self.device
+        elif gpu is not None:
+            tipo = str(gpu.get("tipo", "cuda"))
+        else:
+            tipo = "cpu"
+        if self.quantize_4bit:
+            dtype = "nf4 (4 bits)"
+        elif tipo in ("cuda", "mps"):
+            dtype = "float16"
+        else:
+            dtype = "float32"
+        nome = gpu["nome"] if gpu is not None and tipo == gpu.get("tipo") else tipo.upper()
+        return {"tipo": tipo, "nome": str(nome), "dtype": dtype}
 
     def load(self) -> None:
         """Carrega tokenizador e modelo (idempotente). Falha cedo se o modelo não couber."""

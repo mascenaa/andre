@@ -318,7 +318,10 @@ class _Builder:
             if rows
             else self.para("Nenhuma ficha foi classificada como não defensável.")
         )
-        return [self.section(4), body]
+        out: list[Flowable] = [self.section(4), body]
+        if self.c.nota_nao_defensaveis:
+            out.append(self.para(self.c.nota_nao_defensaveis))
+        return out
 
     def custo(self) -> list[Flowable]:
         cost = self.c.custo

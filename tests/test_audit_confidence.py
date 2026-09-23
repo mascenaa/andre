@@ -245,3 +245,26 @@ def test_preenchida_sem_suporte_continua_media_em_v2() -> None:
     f = build_final_fichas([rec], [rec], [rec], RULE_V2)[0]
     assert f.limitacao is not None and f.limitacao.verdict == "preenchida_sem_suporte"
     assert f.confianca == Confianca.MEDIA
+
+
+def test_revisao_manual_so_rebaixa_e_e_declarada() -> None:
+    """A revisão manual (leitura contra o artigo) faz parte da regra: rebaixa a BAIXA com o
+    motivo registrado, nunca promove, e aparece no texto declarado."""
+    names = ["a.pdf", "b.pdf", "c.pdf"]
+    primary = [make_record(n) for n in names]
+    rep2 = [make_record(n, run_id="rep2") for n in names]
+    alt = [make_record(n, strategy="semantic", run_id="alt") for n in names]
+    regra = RULE_V2.with_manual_review({"b": "metrica expande a sigla TSS com nome inventado"})
+    assert regra.manual_reason("b.pdf") == "metrica expande a sigla TSS com nome inventado"
+    assert regra.manual_reason("a.pdf") is None
+    assert "revisão manual" in regra.describe() and "revisão manual" not in RULE_V2.describe()
+
+    by = {f.arquivo: f for f in build_final_fichas(primary, rep2, alt, regra)}
+    assert by["a.pdf"].confianca == Confianca.ALTA
+    assert by["b.pdf"].confianca == Confianca.BAIXA
+    assert by["b.pdf"].motivos == ["revisão manual: metrica expande a sigla TSS com nome inventado"]
+    # Numa ficha já rebaixada, o motivo lido se soma aos automáticos.
+    primary[2] = make_record("c.pdf", failed=True)
+    regra2 = regra.with_manual_review({"c": "o trecho é o título do artigo"})
+    c = {f.arquivo: f for f in build_final_fichas(primary, rep2, alt, regra2)}["c.pdf"]
+    assert c.confianca == Confianca.BAIXA and c.motivos[-1].startswith("revisão manual")

@@ -136,6 +136,8 @@ class ExtractionRunner:
                 "blocos": self.builder.markers_present(),
             },
             "estrategia": {"nome": self.selector.name, "params": {}},
+            # Hardware e precisão (Seção 4.3): declarar onde rodou, não só qual modelo.
+            "dispositivo": getattr(self.client, "device_info", None),
             "geracao": asdict(self.params),
             "temperatura": self.params.temperature,
             "seed": self.params.seed,

@@ -232,7 +232,7 @@ ausente do texto enviado". Os dois métodos podem ser desligados (`check_leakage
 | semantic v_sem_fewshot t0 | 0/18 | controle: sem exemplos no prompt, nenhum falso positivo |
 | first_pages v_full t0 | 3/18 | 08_Leka e D03_Sun (métrica "WMAPE ... 13 semanas"), 16_Nishizuka ("comparado com a suavização exponencial") |
 | semantic v_full t0.7 (subconjunto) | 0/6 | — |
-| hybrid v_full t0 | 1/16 (execução em andamento) | 06_Barnes (`limitacao` do exemplo 1) |
+| hybrid v_full t0 | 2/19 | 06_Barnes (`limitacao` do exemplo 1), D03_Sun (trecho) |
 
 **Na comparação de prompts**, `RunStats.rate_fewshot_leak` aparece lado a lado. Few-shot
 melhora formato e fidelidade, mas abre a porta para copiar o exemplo. A variante sem few-shot
@@ -251,3 +251,39 @@ intuição. Ela entra na confiança de cada ficha e na discussão do relatório.
 
 **Consequência.** A lista de marcadores está acoplada aos exemplos. Um teste confere que cada
 termo existe no seu exemplo, então mudar os exemplos obriga a revisar a lista.
+
+## Revisão manual como parte da regra (2026-09-23, após a leitura das fichas)
+
+**O que a leitura mostrou.** Lendo as fichas ALTA contra o artigo, encontramos erros que
+nenhuma verificação automática vê: `D01_Li` expande TSS/HSS como "Score de Tendência de
+Sazonalidade" e "Hidrometria de Sazonalidade" (o artigo define True Skill Statistic e Heidke
+Skill Score, p. 8); `17a_Roy` expande as mesmas siglas como "meio de tensão simétrica" e cita um
+"modelo de fusão de tempo" que não existe no artigo; `D02_Wang` diz "LSTM de 20 camadas" onde o
+artigo diz *two-layer*; `14_Licata` troca densidade termosférica por "densidade solar e
+geomagnética"; `D03_Sun` se contradiz em `dados`. Todas passaram na fidelidade (trecho real, na
+página declarada) e na estabilidade (idênticas entre repetições). A fidelidade prova que o
+trecho existe, não que os campos livres o seguem.
+
+Nas fichas já BAIXA, o motivo automático escondia a causa: em `11_Jarolim`, "página errada"
+é um trecho que é o título do artigo, copiado do rodapé "Cite this article"; em `D04_Jiao`,
+`dados` é uma sequência de números de uma tabela do apêndice; em `09_AsensioRamos`, a ficha
+descreve o trabalho citado no trecho (o artigo é uma revisão) e o "123" vem do rodapé da
+editora.
+
+**Decisão.** `ConfidenceRule.manual_review` — pares `(prefixo do arquivo, motivo lido)` —
+passa a fazer parte da regra declarada. O efeito é só rebaixar para BAIXA, com o motivo
+registrado ficha a ficha (`"revisão manual: ..."`); nunca promove. O texto de
+`describe()` declara quantas fichas foram rebaixadas assim e por quê. A distribuição final
+é reportada em três colunas (v1 estrita, v2 categórica, v2 + revisão manual), para que se
+veja o que cada passo mudou: v2 sozinha dava alta 14/média 1/baixa 4; com a revisão,
+alta 9/média 1/baixa 9.
+
+**Por que não é "no olho".** A regra automática continua determinística e vale para todas
+as fichas; a revisão só adiciona motivos com citação (campo, o que foi lido, página do
+artigo) e só na direção de menos confiança. As nove fichas que continuam ALTA foram lidas
+com o mesmo critério (números e siglas dos campos livres presentes no texto enviado) sem
+achado — o que as torna as fichas que defenderíamos, não fichas provadas corretas.
+
+**Consequência.** ALTA sem leitura não vale como garantia; o relatório diz isso na seção 5.
+Com mais tempo, a checagem "termos técnicos dos campos existem no contexto" vira verificação
+automática (a leitura mostrou que a expansão de sigla é o padrão de erro mais convincente).

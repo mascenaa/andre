@@ -69,8 +69,9 @@ make setup      # .venv + pacote em modo editável com extras dev/notebook/embed
 make smoke      # pipeline inteiro em ~1 s: FakeLLM + PDFs sintéticos (sem GPU, sem rede)
 make test       # pytest (inclui executar o notebook em modo ensaio)
 make lint typecheck
-make notebook   # gera e executa notebooks/AtividadeI_SOBRENOMES.ipynb (MODO=ensaio por padrão)
+make notebook   # gera e executa o notebook de entrega em modo real (MODO=ensaio só para testar)
 make report     # relatório PDF de exemplo em data/outputs/
+make entrega    # copia os três entregáveis para entrega/ (o que vai para o Canvas)
 make help       # todos os alvos
 ```
 

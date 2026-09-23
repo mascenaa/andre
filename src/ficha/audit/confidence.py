@@ -8,8 +8,8 @@ impediram de ter nível mais alto — é o que sustenta "quais fichas você não
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from dataclasses import dataclass, field
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
 from ficha.audit.diff import DiffReport, diff_runs, index_by_arquivo
@@ -84,6 +84,26 @@ class ConfidenceRule:
 
     Entre REPETIÇÕES (mesma entrada) a igualdade é sempre exata, nos dois modos.
     """
+    manual_review: tuple[tuple[str, str], ...] = ()
+    """Revisão manual declarada: pares ``(prefixo do arquivo, motivo)``.
+
+    A fidelidade prova que o trecho existe no texto enviado, não que os campos livres o
+    seguem. Onde o grupo leu a ficha contra o artigo e encontrou, num campo livre, termo,
+    sigla expandida ou número ausente do texto enviado, a ficha cai para BAIXA e o motivo fica
+    registrado por ficha (ver :meth:`with_manual_review`). É parte da regra declarada, não um
+    ajuste "no olho": cada entrada cita o que foi lido e onde.
+    """
+
+    def with_manual_review(self, review: Mapping[str, str]) -> ConfidenceRule:
+        """Cópia da regra com a revisão manual ``{prefixo_do_arquivo: motivo}``."""
+        return replace(self, manual_review=tuple(sorted(review.items())))
+
+    def manual_reason(self, arquivo: str) -> str | None:
+        """Motivo da revisão manual para ``arquivo`` (casamento por prefixo), ou ``None``."""
+        for prefix, reason in self.manual_review:
+            if arquivo.startswith(prefix):
+                return reason
+        return None
 
     @property
     def version(self) -> str:
@@ -157,6 +177,16 @@ class ConfidenceRule:
             if self.check_leakage
             else ""
         )
+        rev = (
+            f"\n- BAIXA também para as {len(self.manual_review)} fichas em que a revisão manual "
+            "do grupo (leitura da ficha contra o artigo) encontrou um erro que as verificações "
+            "automáticas não medem: sigla expandida com nome inventado, número ou tema ausente "
+            "do texto enviado, trecho que não sustenta os campos (um título, uma tabela). A "
+            "fidelidade prova que o trecho existe, não que os campos o seguem; o motivo lido "
+            "fica registrado ficha a ficha e só rebaixa, nunca promove."
+            if self.manual_review
+            else ""
+        )
         return (
             f"Regra de confiança {self.version} (aplicada automaticamente; o nível final é o "
             "MENOR entre os limites abaixo):\n"
@@ -167,7 +197,8 @@ class ConfidenceRule:
             f"- MEDIA se a evidência passou, mas {media_cmp}, ou se alguma comparação não pôde "
             "ser feita (ausente ou sem ficha válida do outro lado): o que não foi verificado "
             f"não recebe ALTA.{lim}\n"
-            f"- ALTA somente se a evidência foi encontrada na página declarada e {alta_cmp}.\n"
+            f"- ALTA somente se a evidência foi encontrada na página declarada e {alta_cmp}."
+            f"{rev}\n"
             "Campos comparados: problema, dados, metodo, metrica, limitacao, evidencia.trecho, "
             "evidencia.pagina; textos iguais após normalização tipográfica (NFKC, minúsculas, "
             f"espaços, aspas e hífens).\n{modo}"
@@ -276,7 +307,8 @@ class ConfidenceRule:
         if level == Confianca.ALTA:
             reasons = [
                 f"trecho encontrado ({fidelity.method}, score {fidelity.score:.2f}) na página "
-                f"declarada p. {fidelity.page_claimed}; estável entre repetições e estratégias"
+                f"declarada p. {fidelity.page_claimed}; idêntica entre repetições; sem "
+                "discordância categórica entre estratégias"
             ]
         return level, reasons
 
@@ -400,6 +432,12 @@ def build_final_fichas(
         status = ParseStatus.FAILED if rec.ficha is None else rec.parse_status
         leak = check_fewshot_leakage(rec, examples, rule.leakage_threshold)
         level, motivos = rule.assign(fid, n_stab, n_inp, status, lim.supported, leak)
+        manual = rule.manual_reason(rec.arquivo)
+        if manual is not None:
+            if level == Confianca.ALTA:
+                motivos = []  # a frase de confirmação da ALTA deixa de valer
+            level = Confianca.BAIXA
+            motivos.append(f"revisão manual: {manual}")
         if rec.ficha is None:
             ficha = failed_ficha(rec.arquivo)
         else:

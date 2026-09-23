@@ -36,7 +36,17 @@ def code(text: str) -> nbformat.NotebookNode:
 
 
 def cells(integrantes: list[str]) -> list[nbformat.NotebookNode]:
-    nomes_md = "\n".join(f"- {n}" for n in integrantes) if integrantes else f"- {PLACEHOLDER}"
+    # As linhas continuam com os 12 espaços do template para o ``dedent`` funcionar.
+    nomes_md = (
+        "\n            ".join(f"- {n}" for n in integrantes) if integrantes else f"- {PLACEHOLDER}"
+    )
+    aviso_nomes = (
+        ""
+        if integrantes
+        else """> Preencha os nomes acima **e** a lista `INTEGRANTES` na célula de setup (ou regenere
+            > com `python scripts/build_notebook.py --integrantes "Nome Sobrenome" ...`). O nome
+            > dos três arquivos de entrega (`AtividadeI_<sobrenomes>`) é derivado dessa lista."""
+    )
     nomes_py = repr(integrantes if integrantes else [PLACEHOLDER])
     return [
         # ------------------------------------------------------------------ 0. identificação
@@ -50,13 +60,14 @@ def cells(integrantes: list[str]) -> list[nbformat.NotebookNode]:
 
             {nomes_md}
 
-            > Preencha os nomes acima **e** a lista `INTEGRANTES` na célula de setup (ou regenere
-            > com `python scripts/build_notebook.py --integrantes "Nome Sobrenome" ...`). O nome
-            > dos três arquivos de entrega (`AtividadeI_<sobrenomes>`) é derivado dessa lista.
+            {aviso_nomes}
 
-            **Declaração de uso de IA (Seção 7).** Usamos assistentes de IA para escrever partes do
-            código do pacote `ficha` e revisar textos. Todas as decisões de projeto, os números e
-            as conclusões foram verificados pelo grupo.
+            **Declaração de uso de IA (Seção 7).** Usamos assistentes de IA (Claude) para gerar a
+            maior parte do código do pacote `ficha`, dos testes e da documentação, e para revisar
+            textos, sempre a partir de decisões de projeto do grupo (registradas nos ADRs em
+            `docs/adr/`). O grupo revisou o código, roda os testes e sabe explicar cada linha
+            entregue. Os números vêm exclusivamente das execuções gravadas em `data/runs`; as
+            conclusões e a revisão manual das fichas são do grupo.
 
             **Como ler este notebook.** Toda a lógica (limpeza, seleção, prompt, parse, auditoria,
             custo, relatório) vive no pacote testado `src/ficha`; aqui só orquestramos e
@@ -65,8 +76,11 @@ def cells(integrantes: list[str]) -> list[nbformat.NotebookNode]:
             - `MODO = "ensaio"`: `FakeLLM` determinístico + PDFs sintéticos gerados na hora —
               roda em segundos, sem GPU nem rede, e prova que o pipeline inteiro funciona.
               **Os números do modo ensaio não são resultados da atividade.**
-            - `MODO = "real"`: os 19 PDFs em `data/raw` + Qwen2.5-3B-Instruct na T4 do Colab
-              (ou o backend declarado). É este que gera a entrega.
+            - `MODO = "real"` (padrão): os 19 PDFs em `data/raw` + Qwen2.5-3B-Instruct em
+              float16. **As execuções entregues rodaram em Apple Silicon (MPS)**, não na T4 do
+              Colab — o `manifest.json` de cada execução registra o dispositivo. Este notebook
+              reaproveita as saídas brutas gravadas em `data/runs` (Seção 7); `FICHA_REUSAR=0`
+              refaz tudo no hardware disponível (na T4, ~1 h).
             """
         ),
         # ------------------------------------------------------------------ 1. setup
@@ -77,7 +91,9 @@ def cells(integrantes: list[str]) -> list[nbformat.NotebookNode]:
             **No Colab, antes de qualquer célula:** *Ambiente de execução → Alterar tipo → GPU T4*
             (a troca reinicia a sessão). Depois:
 
-            1. suba `ficha.zip` (gerado por `make colab-zip`) para `/content/`;
+            1. suba `ficha.zip` (gerado por `make colab-zip`; traz o código **e** as saídas brutas
+               de `data/runs`, para o notebook rodar de ponta a ponta sem refazer a GPU) para
+               `/content/`;
             2. suba os 19 PDFs para `/content/ficha/data/raw/` (ou aponte `RAW_DIR` para o Drive);
             3. se for usar API, cadastre a chave nos **Secrets** do Colab (ícone de chave) com o nome
                `ANTHROPIC_API_KEY` — ela é lida para o ambiente **sem ser impressa**.
@@ -95,7 +111,7 @@ def cells(integrantes: list[str]) -> list[nbformat.NotebookNode]:
             from pathlib import Path
 
             INTEGRANTES = {nomes_py}
-            MODO = os.environ.get("FICHA_MODO", "ensaio")  # troque para "real" na entrega
+            MODO = os.environ.get("FICHA_MODO", "real")  # "ensaio" só para testar o pipeline
             BACKEND_REAL = "qwen_local"  # ou "anthropic" / "openai_compat" (declare no relatório)
             RAW_DIR = None  # ex.: Path("/content/drive/MyDrive/artigos") — None = data/raw
             # Reutiliza execuções já gravadas em data/runs (mesma configuração) em vez de chamar
@@ -572,7 +588,7 @@ def cells(integrantes: list[str]) -> list[nbformat.NotebookNode]:
                 t_alt=execucoes["temperatura_alt"].records,
                 prompt_runs=(execucoes["principal"].records, execucoes["prompt_alt"].records),
                 limitacao_gabarito=GABARITO_LIMITACAO,
-                rule=RULE_V2,  # regra final — ver a calibração na seção 9
+                rule=RULE_V2,  # regra automática; a revisão manual entra na seção 9
             )
             tabelas = resumo.tables()
 
@@ -703,9 +719,21 @@ def cells(integrantes: list[str]) -> list[nbformat.NotebookNode]:
             evidências de outras páginas por construção), enquanto entre repetições com a mesma
             entrada é 1,00. A v2 compara estratégias só pela **discordância categórica** — a
             limitação declarada numa e `null` na outra — e mantém a comparação exata entre
-            repetições. A tabela abaixo mostra as duas distribuições lado a lado; a tabela final e
-            o PDF usam a v2. A calibração foi decidida depois de ver os dados reais, e isso é
-            declarado aqui e no relatório.
+            repetições. A tabela abaixo mostra as distribuições lado a lado; a tabela final e o
+            PDF usam a v2 **mais a revisão manual**. A calibração foi decidida depois de ver os
+            dados reais, e isso é declarado aqui e no relatório.
+
+            **O que a regra automática não vê — e a leitura viu.** A fidelidade prova que o trecho
+            de evidência existe no texto enviado, não que os campos livres (`problema`, `dados`,
+            `metodo`, `metrica`) o seguem. Lendo as fichas ALTA contra o artigo, encontramos
+            erros que nenhuma verificação pega: siglas expandidas com nomes inventados (TSS como
+            "Score de Tendência de Sazonalidade"), um número de camadas trocado, o tema do artigo
+            errado. Cada achado entra na regra como `revisão manual` — declarado ficha a ficha,
+            com o que foi lido e onde — e rebaixa a ficha para BAIXA. Também registramos a causa
+            real nas fichas que a regra já tinha rebaixado (por exemplo, "página errada" em
+            11_Jarolim esconde que o trecho é o título do artigo, tirado do rodapé "Cite this
+            article"). Isso não é ajuste "no olho": é o inverso — leitura que rebaixa, nunca que
+            promove.
             """
         ),
         code(
@@ -713,13 +741,62 @@ def cells(integrantes: list[str]) -> list[nbformat.NotebookNode]:
             from ficha.audit import build_final_fichas, confidence_distribution
             from ficha.report.assemble import mean_text_similarity
 
+            # Revisão manual (leitura da ficha contra o artigo): prefixo do arquivo → o que foi lido.
+            # Só rebaixa; nunca promove. Vale para a execução principal (semantic, v_full, t=0).
+            REVISAO_MANUAL = {
+                "D01_Li": (
+                    "metrica expande TSS/HSS como 'Score de Tendência de Sazonalidade' e 'Hidrometria "
+                    "de Sazonalidade'; o artigo define True Skill Statistic e Heidke Skill Score (p. 8) "
+                    "e o texto enviado só traz as siglas — expansão inventada"
+                ),
+                "17a_Roy": (
+                    "metrica expande TSS/HSS como 'meio de tensão simétrica' (o artigo diz True Skill "
+                    "Statistic, p. 19); metodo cita um 'modelo de fusão de tempo' que não existe no "
+                    "artigo — provável eco do 'Temporal fusion transformer' do exemplo few-shot"
+                ),
+                "D02_Wang": "metodo diz 'LSTM de 20 camadas'; o artigo usa two-layer LSTM (p. 5)",
+                "14_Licata": (
+                    "problema fala em 'densidade solar e geomagnética'; o artigo modela densidade "
+                    "termosférica (título, p. 1)"
+                ),
+                "D03_Sun": (
+                    "dados diz '2010 a 2020; período e volume não informados' — contradição interna, "
+                    "com a segunda metade copiada do exemplo few-shot"
+                ),
+                "11_Jarolim": (
+                    "o trecho de evidência é o título do próprio artigo, vindo do rodapé 'Cite this "
+                    "article' (p. 16): um título não sustenta nenhum campo"
+                ),
+                "D04_Jiao": (
+                    "dados é uma sequência de números copiada de uma tabela do apêndice (p. 26), sem "
+                    "fonte, período nem volume"
+                ),
+                "09_AsensioRamos": (
+                    "o artigo é uma revisão (Living Reviews); a ficha descreve o trabalho de Bobra & "
+                    "Couvidat citado no trecho, e o '123' vem do rodapé da editora (p. 2)"
+                ),
+            } if MODO == "real" else {}
+            REGRA_FINAL = RULE_V2.with_manual_review(REVISAO_MANUAL)
+
             args_regra = (execucoes["principal"].records, execucoes["repeticao"].records,
                           execucoes["entrada_alt"].records)
             DISTRIBUICOES = {
                 "v1 estrita": confidence_distribution(build_final_fichas(*args_regra, RULE_V1)),
-                "v2 categórica (final)": confidence_distribution(build_final_fichas(*args_regra, RULE_V2)),
+                "v2 categórica": confidence_distribution(build_final_fichas(*args_regra, RULE_V2)),
+                "v2 + revisão manual (final)": confidence_distribution(build_final_fichas(*args_regra, REGRA_FINAL)),
             }
             display(pd.DataFrame(DISTRIBUICOES).rename_axis("confianca"))
+            # Resumo final: mesma auditoria, regra v2 + revisão manual (é o que vai para a tabela e o PDF).
+            resumo = build_audit_summary(
+                execucoes["principal"].records,
+                stability_rep=execucoes["repeticao"].records,
+                alt_input=execucoes["entrada_alt"].records,
+                t_alt=execucoes["temperatura_alt"].records,
+                prompt_runs=(execucoes["principal"].records, execucoes["prompt_alt"].records),
+                limitacao_gabarito=GABARITO_LIMITACAO,
+                rule=REGRA_FINAL,
+            )
+            tabelas = resumo.tables()
             sim_entrada = mean_text_similarity(resumo.input_effect.diff.field_mean_similarity)
             sim_repeticao = mean_text_similarity(resumo.stability.diff.field_mean_similarity)
             print(f"Similaridade média dos campos de texto livre: entre estratégias {sim_entrada:.2f} · "
@@ -822,6 +899,50 @@ def cells(integrantes: list[str]) -> list[nbformat.NotebookNode]:
             from ficha.report.assemble import Narrative, build_report_content
             from ficha.report.pdf import ReportTooLongError
 
+            # Onde rodou: do manifest da execução principal (não do hardware desta sessão, que
+            # pode ser outro quando as execuções são reaproveitadas).
+            DISPOSITIVO = execucoes["principal"].manifest.get("dispositivo") or {}
+            gpu_sessao = describe_gpu()
+            onde = DISPOSITIVO.get("nome") or (gpu_sessao["nome"] if gpu_sessao else "CPU")
+            MODELO_DECLARADO = f"{client.model_name} · {onde}" + (
+                f", {DISPOSITIVO['dtype']}" if DISPOSITIVO.get("dtype") else ""
+            )
+            HARDWARE = (
+                f"Onde rodou de fato: {onde}, {DISPOSITIVO.get('dtype', 'float16')}, sem "
+                "quantização (registrado no manifest de cada execução) — e não na T4 do Colab. "
+                "A precisão declarada (fp16) é a mesma; reexecutar em CUDA pode mudar a saída "
+                "gulosa em empates numéricos, e a auditoria seria refeita sobre as novas saídas. "
+                "O notebook entregue reaproveita as saídas brutas de data/runs."
+            ) if MODO == "real" else ""
+            interrompidas = [
+                (rid, store.manifest(rid)) for rid in store.list_runs()
+                if store.manifest(rid).get("status_execucao") == "interrompida"
+            ]
+            NOTA_CUSTO = " ".join(
+                f"Execução {rid} ({m['observacao']})." if m.get("observacao")
+                else f"Execução {rid} foi interrompida; os registros gravados contam."
+                for rid, m in interrompidas
+            )
+            n_rev = sum(1 for f in resumo.fichas if any(m.startswith("revisão manual") for m in f.motivos))
+            n_rev_alta = sum(
+                1 for f in resumo.fichas
+                if any(m.startswith("revisão manual") for m in f.motivos)
+                and not any(not m.startswith("revisão manual") for m in f.motivos)
+            )
+            n_alta = resumo.confidence_distribution["alta"]
+            NOTA_NAO_DEFENSAVEIS = (
+                f"As {n_rev_alta} fichas marcadas só por 'revisão manual' passaram em todas as "
+                "verificações automáticas: trecho real, na página declarada, idêntico entre "
+                "repetições. O erro está nos campos livres — siglas expandidas com nomes inventados, "
+                "um número de camadas, o tema do artigo — que a fidelidade não olha: ela prova que o "
+                "trecho existe, não que os campos o seguem. Foi a leitura da ficha contra o artigo "
+                "que os encontrou, e por isso ALTA sem leitura não vale como garantia. Nas outras "
+                f"{n_alta} fichas ALTA a leitura não achou erro desse tipo, mas não há gabarito: são "
+                "as fichas que defenderíamos, não as que provamos corretas. A nossa invenção mais "
+                "convincente não é 'supermercados' num artigo de física solar — é 'Score de "
+                "Hidrometria de Sazonalidade' para HSS, plausível para quem não conhece a sigla."
+            ) if MODO == "real" and n_rev else ""
+
             estrategia_textos = {}
             if ESTRATEGIA == "semantic" and ANTES_DEPOIS:
                 estrategia_textos = dict(
@@ -839,9 +960,9 @@ def cells(integrantes: list[str]) -> list[nbformat.NotebookNode]:
                 )
             narrativa = Narrative(  # edite aqui; conclusoes={"fidelidade": "..."} sobrescreve blocos
                 **estrategia_textos,
-                cobertura_limitacao=" ".join(
-                    t for t in (COBERTURA_LIMITACAO, ORCAMENTO_HYBRID, CIRCULARIDADE) if t
-                ),
+                # A curva de orçamento do hybrid (ORCAMENTO_HYBRID) fica só neste notebook: o
+                # experimento foi descartado e o PDF tem 3 páginas.
+                cobertura_limitacao=" ".join(t for t in (COBERTURA_LIMITACAO, CIRCULARIDADE) if t),
                 antes_depois=(
                     f"Experimento {EXPERIMENTO} × {ESTRATEGIA}: comparação a três na seção 1."
                     if estrategia_textos else ANTES_DEPOIS
@@ -854,9 +975,22 @@ def cells(integrantes: list[str]) -> list[nbformat.NotebookNode]:
                     "(título 'Scope, and Limitations'; parágrafo sobre limitações da IA "
                     "generativa) e por isso não entra na regra."
                 ) if MODO == "real" else "",
+                nota_temperatura=(
+                    f"Subconjunto: os {len(SUBCONJUNTO_T)} primeiros artigos em ordem alfabética, "
+                    "fixados antes de rodar (não é amostra aleatória)."
+                ),
+                nota_custo=NOTA_CUSTO,
+                nota_nao_defensaveis=NOTA_NAO_DEFENSAVEIS,
+                declaracao_uso_ia=(
+                    "Usamos assistentes de IA (Claude) para gerar a maior parte do código do pacote "
+                    "ficha, dos testes e da documentação, e para revisar textos, a partir de decisões "
+                    "de projeto do grupo registradas nos ADRs. O grupo revisou o código e sabe "
+                    "explicar cada linha. Os números vêm das execuções gravadas em data/runs; as "
+                    "conclusões e a revisão manual das fichas são do grupo."
+                ),
+                **({"modelo_justificativa": Narrative().modelo_justificativa + " " + HARDWARE}
+                   if HARDWARE else {}),
             )
-            gpu = describe_gpu()
-            MODELO_DECLARADO = client.model_name + (f" · {gpu['nome']}" if gpu else "")
             if MODO == "ensaio":
                 MODELO_DECLARADO += " (MODO ENSAIO: FakeLLM + PDFs sintéticos — não é resultado)"
 
@@ -891,21 +1025,21 @@ def cells(integrantes: list[str]) -> list[nbformat.NotebookNode]:
         # ------------------------------------------------------------------ 13. checklist
         md(
             """
-            ## 13. Checklist de entrega
+            ## 13. Conferência de entrega
 
-            - [ ] `MODO = "real"` e os 19 PDFs em `data/raw` (a tabela da seção 3 mostra 19 linhas).
-            - [ ] Integrantes preenchidos na **primeira célula** e em `INTEGRANTES`; o PDF traz os
-                  nomes na primeira página.
-            - [ ] Os três arquivos nomeados `AtividadeI_<sobrenomes>`: este notebook (renomeie o
-                  `.ipynb`), `data/outputs/AtividadeI_<sobrenomes>.csv`/`.xlsx` e `.pdf`.
-            - [ ] **Ambiente de execução → Reiniciar e executar tudo**, sem erro, com as saídas
-                  visíveis — só então baixar o `.ipynb`.
-            - [ ] O PDF tem no máximo 3 páginas (a seção 12 imprime o número).
-            - [ ] Nenhuma chave no notebook: só Secrets do Colab/variáveis de ambiente (a célula de
-                  setup imprime apenas se a chave existe).
-            - [ ] As conclusões do relatório foram revisadas pelo grupo em `Narrative(...)` e cada
-                  frase é defensável com um número deste notebook.
-            - [ ] As saídas brutas (`data/runs/`) foram guardadas.
+            O que este notebook garante por construção, e o que conferimos antes de enviar:
+
+            - `MODO = "real"` é o padrão; a tabela da seção 3 mostra os 19 artigos.
+            - Integrantes na **primeira célula** e em `INTEGRANTES`; o PDF traz os nomes na primeira
+              página; os três arquivos saem com o nome `AtividadeI_<sobrenomes>` derivado da lista.
+            - **Reiniciar e executar tudo** roda sem erro, com as saídas visíveis, reaproveitando as
+              saídas brutas de `data/runs` (o modelo não é chamado de novo, salvo `FICHA_REUSAR=0`).
+            - O PDF tem no máximo 3 páginas: a seção 12 imprime o número e falha se passar.
+            - Nenhuma chave no notebook: só Secrets do Colab/variáveis de ambiente; a célula de setup
+              imprime apenas se a chave existe.
+            - As conclusões do relatório foram revisadas pelo grupo em `Narrative(...)`; a revisão
+              manual das fichas está na seção 9, com o que foi lido e onde.
+            - As saídas brutas (`data/runs/`) estão guardadas e versionadas.
             """
         ),
     ]
