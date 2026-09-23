@@ -82,11 +82,29 @@ class FichaExtraida(BaseModel):
 
     @classmethod
     def json_schema_for_prompt(cls) -> dict[str, Any]:
-        """Schema JSON enxuto para ser embutido no prompt (sem títulos gerados pelo pydantic)."""
+        """Schema JSON enxuto para embutir no prompt.
+
+        Remove os ``title`` gerados pelo pydantic (em todos os níveis), a descrição interna
+        da classe, e torna ``limitacao`` explicitamente obrigatória (o modelo tem de escrever
+        a chave, com ``null`` quando não houver limitação declarada — ausência da chave não
+        é abstenção, é omissão).
+        """
         schema = cls.model_json_schema()
-        schema.pop("title", None)
-        for definition in schema.get("$defs", {}).values():
-            definition.pop("title", None)
+
+        def _strip(node: Any) -> Any:
+            if isinstance(node, dict):
+                node.pop("title", None)
+                return {k: _strip(v) for k, v in node.items()}
+            if isinstance(node, list):
+                return [_strip(v) for v in node]
+            return node
+
+        schema = dict(_strip(schema))
+        schema.pop("description", None)
+        required = list(schema.get("required", []))
+        if "limitacao" not in required:
+            required.append("limitacao")
+        schema["required"] = required
         return schema
 
 

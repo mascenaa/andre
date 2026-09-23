@@ -95,6 +95,7 @@ def fake_llm_ruim() -> FakeLLM:
             invent_trecho_rate=0.3,
             invent_limitacao_rate=0.5,
             unstable_rate=0.3,
+            truncate_rate=0.1,
         )
     )
 

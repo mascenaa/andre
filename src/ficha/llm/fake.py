@@ -24,6 +24,7 @@ from ficha.types import Completion, GenerationParams, Usage
 _PAGE_MARK_RE = re.compile(r"^\[p\. (\d+)\]\s*$", re.MULTILINE)
 _DELIM_RE = re.compile(r"<<<ARTIGO>>>(.*?)<<<FIM_ARTIGO>>>", re.DOTALL)
 _ARQUIVO_RE = re.compile(r"[\w\-]+\.pdf")
+_PLAIN_ARTICLE_RE = re.compile(r"^Artigo:[ \t]*$", re.MULTILINE)
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,6 +39,11 @@ class FakeBehavior:
     """Fração de chamadas em que ``limitacao`` é inventada embora o texto não declare nenhuma."""
     unstable_rate: float = 0.0
     """Fração de chamadas em que um campo textual varia (simula não-determinismo)."""
+    truncate_rate: float = 0.0
+    """Fração de chamadas em que a saída é cortada no meio do JSON, como quando um modelo
+    pequeno bate em ``max_new_tokens`` (``Completion.raw["finish_reason"] == "length"``).
+    Nenhum reparo recupera um objeto incompleto, então o resultado é ``FAILED`` de verdade:
+    serve para o modo de ensaio do notebook exibir um caso FAILED."""
     temperature_noise: bool = True
     """Se True, temperatura > 0 aumenta as taxas acima proporcionalmente (efeito 4.4d)."""
     chars_per_token: float = 4.0
@@ -69,7 +75,7 @@ class FakeLLM:
         first_page = pages[0][0] if pages else 1
         body = pages[0][1] if pages else article
 
-        text = self._build_ficha_json(body, first_page, rng, params)
+        text, truncated = self._build_ficha_json(body, first_page, rng, params)
         usage = Usage(
             input_tokens=self.count_tokens((system or "") + user),
             output_tokens=self.count_tokens(text),
@@ -80,7 +86,7 @@ class FakeLLM:
             model=self.name,
             latency_s=time.perf_counter() - t0,
             params=params,
-            raw={"fake": True},
+            raw={"fake": True, "finish_reason": "length" if truncated else "stop"},
         )
 
     # ------------------------------------------------------------------ internos
@@ -101,8 +107,19 @@ class FakeLLM:
 
     @staticmethod
     def _article_text(user: str) -> str:
-        m = _DELIM_RE.search(user)
-        return m.group(1) if m else user
+        """Localiza o artigo no prompt.
+
+        Com delimitadores, o texto do último par ``<<<ARTIGO>>>``/``<<<FIM_ARTIGO>>>``. Sem eles
+        (variante ``v_sem_delimitadores``), o que vem depois da **última** linha ``Artigo:`` —
+        os exemplos few-shot vêm antes e também têm marcadores ``[p. N]``.
+        """
+        # O último bloco delimitado é o artigo (o prompt termina nele); isso tolera uma menção
+        # aos marcadores na prosa da instrução.
+        delimited = list(_DELIM_RE.finditer(user))
+        if delimited:
+            return delimited[-1].group(1)
+        plain = list(_PLAIN_ARTICLE_RE.finditer(user))
+        return user[plain[-1].end() :] if plain else user
 
     @staticmethod
     def _pages(article: str) -> list[tuple[int, str]]:
@@ -125,7 +142,8 @@ class FakeLLM:
 
     def _build_ficha_json(
         self, body: str, page: int, rng: random.Random, params: GenerationParams
-    ) -> str:
+    ) -> tuple[str, bool]:
+        """JSON da ficha (possivelmente estragado) e se a saída foi truncada."""
         b = self.behavior
         declara_limitacao = re.search(r"limitation", body, re.IGNORECASE) is not None
         trecho = self._sentence(body, rng)
@@ -165,4 +183,10 @@ class FakeLLM:
                 + text.replace('"pagina": ' + str(page), '"pagina": ' + str(page) + ",")
                 + "\n```"
             )
-        return text
+
+        # Sorteado por último para não alterar a sequência das taxas anteriores.
+        if rng.random() < self._rate(b.truncate_rate, params):
+            # Corta entre 30% e 80% do texto: o objeto fica sempre desbalanceado.
+            cut = int(len(text) * rng.uniform(0.3, 0.8))
+            return text[:cut], True
+        return text, False

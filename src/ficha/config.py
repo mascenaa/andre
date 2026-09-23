@@ -52,6 +52,14 @@ class Settings(BaseSettings):
     chunk_size_chars: int = 1200
     chunk_overlap_chars: int = 200
     semantic_top_k: int = 6
+    semantic_max_chars: int | None = Field(
+        default=8000,
+        description=(
+            "Orçamento de caracteres do contexto semântico (~2 mil tokens). Sem teto, "
+            "8 consultas × top_k=6 num artigo de 25 páginas chegam a 30–50 mil caracteres, "
+            "o que anula a economia que justifica a estratégia (Seções 4.1 e 4.5)."
+        ),
+    )
     embedding_model: str = Field(
         default="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
         description=(

@@ -74,7 +74,7 @@ files = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q --strict-markers"
+addopts = "-q --strict-markers -m 'not slow'"
 markers = [
   "slow: testes que baixam modelos ou rodam GPU (pulados por padrão)",
 ]

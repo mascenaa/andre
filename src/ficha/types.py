@@ -266,6 +266,8 @@ class ExtractionRecord:
     parse_status: ParseStatus
     ficha: FichaExtraida | None
     error: str | None = None
+    repairs: list[str] = field(default_factory=list)
+    """Reparos aplicados pelo parser (vazio quando ``parse_status == OK``)."""
     doc_sha256: str | None = None
     created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
 
@@ -284,6 +286,7 @@ class ExtractionRecord:
         d["parse_status"] = ParseStatus(d["parse_status"])
         d["ficha"] = FichaExtraida.model_validate(d["ficha"]) if d.get("ficha") else None
         d["context_pages"] = tuple(d.get("context_pages", ()))
+        d.setdefault("repairs", [])
         return cls(**d)
 
 
