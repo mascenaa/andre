@@ -22,9 +22,10 @@ import pandas as pd
 
 from ficha.audit import AuditSummary, PromptComparison
 from ficha.audit.confidence import CALIBRACAO_ENTRADA
-from ficha.audit.normalize import normalize_for_match
+from ficha.audit.fidelity import FidelitySummary, fidelity_summary
+from ficha.audit.leakage import LeakageSummary, leakage_summary
 from ficha.cost import CostComparison, CostReport
-from ficha.prompts import FEW_SHOT_EXAMPLES, VARIANTS, describe_diff
+from ficha.prompts import VARIANTS, describe_diff
 from ficha.report.content import (
     AuditBlock,
     AuditResults,
@@ -32,7 +33,7 @@ from ficha.report.content import (
     PromptVersion,
     ReportContent,
 )
-from ficha.types import Document
+from ficha.types import Document, ExtractionRecord
 
 _FEATURE_LABELS = {
     "role": "papel",
@@ -48,6 +49,7 @@ _PROMPT_ROWS: dict[str, str] = {
     "rate_null_when_expected": "null correto quando não há limitação",
     "rate_fidelity": "trecho encontrado (fidelidade)",
     "rate_page_ok": "página correta",
+    "rate_fewshot_leak": "vazamento de exemplos",
     "rate_identical_entre_variantes": "fichas idênticas entre versões",
     "input_tokens": "tokens de entrada",
 }
@@ -102,14 +104,16 @@ class Narrative:
         default_factory=lambda: [
             "Anotar à mão um gabarito de limitacao em 5 artigos, para separar abstenção "
             "correta de omissão (hoje indistinguíveis).",
-            'Instruir explicitamente "não copie os exemplos" no prompt e medir se o '
-            "vazamento do few-shot para a evidência desaparece.",
+            "Exemplos few-shot em domínio propositalmente distante não bastaram: instruir "
+            'explicitamente "não copie os exemplos" no prompt e medir se o vazamento some.',
             "Comparar o modelo local com um modelo por API nas mesmas 19 fichas.",
         ]
     )
     cobertura_limitacao: str = ""
     """Evidência medida sobre a seleção (ex.: quantas frases de limitação do texto completo
     chegam ao contexto de cada estratégia). Vai para a seção 1 do relatório."""
+    antes_depois: str = ""
+    """Frase "antes × depois" da seleção (ver :func:`before_after_sentence`), anexada a 4.4c."""
     nota_limitacao: str = ""
     """Frase sobre ``limitacao`` null (gabarito, heurística), anexada à conclusão de 4.4c."""
     destaque: str | None = None
@@ -140,25 +144,11 @@ def short_name(arquivo: str) -> str:
     return "_".join(parts[:3]) if len(parts) > 3 else stem
 
 
-def few_shot_leak(trecho: str) -> str | None:
-    """Nome do exemplo few-shot de onde ``trecho`` foi copiado, ou ``None``.
-
-    Um trecho que existe no exemplo do prompt, mas não no artigo, é a invenção mais
-    convincente possível: frase real, bem formada, com cara de artigo científico.
-    """
-    needle = normalize_for_match(trecho)
-    if len(needle) < 20:
-        return None
-    for ex in FEW_SHOT_EXAMPLES:
-        if needle in normalize_for_match(ex.context_text) or needle in normalize_for_match(
-            ex.output.evidencia.trecho
-        ):
-            return ex.name
-    return None
-
-
-def _trechos(summary: AuditSummary) -> dict[str, str]:
-    return {f.arquivo: f.ficha.evidencia.trecho for f in summary.fichas if not f.failed}
+def _leak_map(leakage: LeakageSummary | None) -> dict[str, list[str]]:
+    """``{arquivo: campos copiados dos exemplos few-shot}`` (fonte: ``ficha.audit.leakage``)."""
+    if leakage is None:
+        return {}
+    return {r.arquivo: r.leaked_fields for r in leakage.leaks()}
 
 
 def fidelity_block(summary: AuditSummary) -> AuditBlock:
@@ -166,10 +156,11 @@ def fidelity_block(summary: AuditSummary) -> AuditBlock:
 
     ``failures()`` mistura dois casos que o relatório separa: trecho devolvido mas ausente do
     texto enviado (invenção) e extração sem ficha (``method == "none"``, nada a verificar).
-    Trechos encontrados em página diferente da declarada são listados à parte.
+    Trechos encontrados em página diferente da declarada são listados à parte. Quando o trecho
+    inventado foi copiado do exemplo few-shot (``summary.leakage``), isso é dito.
     """
     fid = summary.fidelity
-    trechos = _trechos(summary)
+    leaks = _leak_map(summary.leakage)
     inventados = [r for r in fid.failures() if r.method != "none"]
     sem_ficha = [r.arquivo for r in fid.failures() if r.method == "none"]
     pagina_errada = [r for r in fid.results if r.found and not r.page_ok]
@@ -183,11 +174,15 @@ def fidelity_block(summary: AuditSummary) -> AuditBlock:
     }
     partes: list[str] = []
     if inventados:
-        itens = []
-        for r in inventados:
-            leak = few_shot_leak(trechos.get(r.arquivo, ""))
-            origem = " (cópia do exemplo few-shot do prompt)" if leak else ""
-            itens.append(f"{short_name(r.arquivo)}{origem}")
+        itens = [
+            short_name(r.arquivo)
+            + (
+                " (cópia do exemplo few-shot do prompt)"
+                if "evidencia.trecho" in leaks.get(r.arquivo, [])
+                else ""
+            )
+            for r in inventados
+        ]
         partes.append(
             f"{len(inventados)}/{fid.n} trecho(s) inventado(s), ausente(s) do texto enviado: "
             f"{', '.join(itens)}."
@@ -212,43 +207,160 @@ def fidelity_block(summary: AuditSummary) -> AuditBlock:
     return AuditBlock("a) Fidelidade", numeros, conclusao)
 
 
-def invention_highlight(summary: AuditSummary) -> str:
-    """Parágrafo de destaque sobre a invenção mais convincente (o que a rubrica pede).
+@dataclass(frozen=True, slots=True)
+class InventionCase:
+    """Uma invenção convincente: campos copiados do exemplo e/ou trecho fora do texto enviado."""
 
-    Prioriza um trecho copiado do exemplo few-shot; senão, o primeiro trecho não encontrado.
-    Vazio se não houve trecho inventado.
+    execucao: str
+    arquivo: str
+    leaked_fields: list[str]
+    example_name: str | None
+    values: dict[str, str]
+    """Valor devolvido pelo modelo em cada campo copiado."""
+    copied_fields: list[str]
+    """Campos copiados por inteiro (similaridade com o campo do exemplo acima do limiar)."""
+    terms: dict[str, str]
+    """Contaminação parcial: ``{campo: termo do exemplo ausente do texto enviado}``."""
+    trecho: str
+    trecho_found: bool
+    page_ok: bool
+    json_ok: bool
+
+
+def invention_cases(
+    runs: Mapping[str, Sequence[ExtractionRecord]],
+) -> list[InventionCase]:
+    """Casos de invenção em cada execução (vazamento few-shot ou trecho não encontrado).
+
+    Um artigo aparece uma vez só: na primeira execução (na ordem de ``runs``) em que o caso ocorre.
     """
-    trechos = _trechos(summary)
-    by_file = {f.arquivo: f for f in summary.fichas}
-    inventados = [r for r in summary.fidelity.failures() if r.method != "none"]
-    if not inventados:
+    out: list[InventionCase] = []
+    vistos: set[str] = set()
+    for label, recs in runs.items():
+        leak: LeakageSummary = leakage_summary(recs)
+        fid: FidelitySummary = fidelity_summary(recs)
+        by_leak = {r.arquivo: r for r in leak.leaks()}
+        by_fid = {r.arquivo: r for r in fid.results}
+        for rec in recs:
+            if rec.ficha is None or rec.arquivo in vistos:
+                continue
+            lr = by_leak.get(rec.arquivo)
+            fr = by_fid[rec.arquivo]
+            hits = [*lr.leaked, *lr.leaked_terms] if lr else []
+            if lr is None and fr.found:
+                continue
+            vistos.add(rec.arquivo)
+            out.append(
+                InventionCase(
+                    execucao=label,
+                    arquivo=rec.arquivo,
+                    leaked_fields=lr.leaked_fields if lr else [],
+                    example_name=hits[0].example_name if hits else None,
+                    values={h.field: h.value for h in hits},
+                    copied_fields=[h.field for h in lr.leaked] if lr else [],
+                    terms={h.field: h.example_value for h in lr.leaked_terms} if lr else {},
+                    trecho=rec.ficha.evidencia.trecho,
+                    trecho_found=fr.found,
+                    page_ok=fr.page_ok,
+                    json_ok=rec.json_valid_first_try,
+                )
+            )
+    return out
+
+
+def _clip(text: str, n: int = 110) -> str:
+    return text if len(text) <= n else text[: n - 1].rstrip() + "…"
+
+
+def _kind(c: InventionCase) -> int:
+    """Tipo de detecção de um caso (menor = mais sutil).
+
+    0 = campo copiado com trecho correto (só o vazamento pega); 1 = cópia com trecho fora do
+    texto enviado; 2 = trecho inventado sem cópia do exemplo.
+    """
+    if c.leaked_fields and c.trecho_found:
+        return 0
+    return 1 if c.leaked_fields else 2
+
+
+def pick_highlights(cases: Sequence[InventionCase], k: int = 2) -> list[InventionCase]:
+    """Até ``k`` casos, um de cada tipo de detecção primeiro (o mais sutil antes)."""
+    chosen: list[InventionCase] = []
+    for kind in (1, 0, 2):
+        found = next((c for c in cases if _kind(c) == kind), None)
+        if found is not None and len(chosen) < k:
+            chosen.append(found)
+    for c in cases:
+        if len(chosen) >= k:
+            break
+        if c not in chosen:
+            chosen.append(c)
+    return chosen
+
+
+def invention_highlight(cases: Sequence[InventionCase], k: int = 2) -> str:
+    """Parágrafo de destaque (o que a rubrica pede): as invenções e por que foram detectadas.
+
+    Mostra até ``k`` casos (um por tipo de detecção); os demais são contados, não descritos.
+    """
+    if not cases:
         return ""
-    leaks = [(r, few_shot_leak(trechos.get(r.arquivo, ""))) for r in inventados]
-    r, leak = next(((r, lk) for r, lk in leaks if lk), leaks[0])
-    trecho = trechos.get(r.arquivo, "")
+    shown = pick_highlights(cases, k)
+    partes: list[str] = []
+    for i, c in enumerate(shown, start=1):
+        nome = f"({i}) {short_name(c.arquivo)}, execução {c.execucao}"
+        if c.leaked_fields and not c.trecho_found:
+            campos = ", ".join(f for f in c.leaked_fields if f != "evidencia.trecho")
+            outros = f"os campos {campos} e " if campos else ""
+            partes.append(
+                f"{nome}: o modelo copiou do exemplo few-shot do prompt {outros}o trecho "
+                f"«{_clip(c.trecho)}», ausente do artigo. Detectado pela fidelidade, que compara o "
+                "trecho com o texto enviado — do qual o exemplo não faz parte."
+            )
+        elif c.leaked_fields:
+            campo = (c.copied_fields or c.leaked_fields)[0]
+            if campo in c.copied_fields:
+                como = "copiado do exemplo few-shot"
+            else:
+                como = (
+                    f"com «{c.terms.get(campo, '')}», termo do exemplo few-shot ausente do artigo"
+                )
+            partes.append(
+                f"{nome}: {campo} «{_clip(c.values.get(campo, ''))}» {como}, com trecho de "
+                "evidência correto — fidelidade e página passam. Só a comparação dos campos com "
+                "os exemplos do prompt detecta."
+            )
+        else:
+            partes.append(
+                f"{nome}: trecho «{_clip(c.trecho)}» ausente do texto enviado. Detectado pela "
+                "fidelidade, que compara com o texto efetivamente enviado ao modelo."
+            )
     formato = (
-        "O JSON era válido de primeira e a página declarada, plausível: nenhuma checagem de "
-        "formato o pegaria. "
-        if by_file.get(r.arquivo) is not None and by_file[r.arquivo].parse_status.value == "ok"
+        " JSON válido de primeira: nenhuma checagem de formato os pegaria."
+        if all(c.json_ok for c in shown)
         else ""
     )
-    if leak:
-        origem = (
-            "a frase do EXEMPLO few-shot do prompt, ausente do artigo. Detectado porque a "
-            "fidelidade compara o trecho com o texto efetivamente enviado ao modelo, e o exemplo "
-            "não faz parte dele"
-        )
-    else:
-        origem = (
-            "uma frase que não existe no texto enviado. Detectado porque a fidelidade compara o "
-            "trecho com o texto efetivamente enviado ao modelo, não com o que parece plausível"
-        )
-    return (
-        f"Invenção convincente — {short_name(r.arquivo)}: o modelo devolveu como evidência "
-        f"«{trecho}», {origem} (similaridade {format_sim(r.score)} < limiar "
-        f"{format_sim(r.threshold)}). "
-        f"{formato}A ficha foi rebaixada a BAIXA."
+    resto = len(cases) - len(shown)
+    outros = f" Outros {resto} caso(s) nas tabelas das verificações a) e e)." if resto else ""
+    return "Invenções convincentes detectadas — " + " ".join(partes) + formato + outros
+
+
+def leakage_block(runs: Mapping[str, Sequence[ExtractionRecord]]) -> AuditBlock:
+    """4.4e — campos copiados dos exemplos few-shot, por execução."""
+    numeros: dict[str, Any] = {}
+    total = 0
+    for label, recs in runs.items():
+        ls = leakage_summary(recs)
+        total += ls.n_with_leak
+        campos = [f for f, n in ls.by_field.items() if n]
+        numeros[label] = f"{ls.n_with_leak}/{ls.n}" + (f" ({', '.join(campos)})" if campos else "")
+    conclusao = (
+        "Cópias do exemplo aparecem mesmo com exemplos em domínio propositalmente distante; "
+        "a verificação compara cada campo com o campo homólogo dos exemplos (limiar 0,80)."
+        if total
+        else "Nenhum campo reproduz os exemplos do prompt."
     )
+    return AuditBlock("e) Vazamento de exemplos few-shot", numeros, conclusao)
 
 
 def stability_block(summary: AuditSummary) -> AuditBlock:
@@ -410,14 +522,14 @@ SMALL_SUBSET = 10
 
 def _t0_errors(summary: AuditSummary, arquivos: Sequence[str]) -> str:
     """Falhas de fidelidade da execução principal dentro do subconjunto, com a causa."""
-    trechos = _trechos(summary)
+    leaks = _leak_map(summary.leakage)
     subset = set(arquivos)
     out = []
     for r in summary.fidelity.failures():
         if r.arquivo not in subset:
             continue
-        leak = few_shot_leak(trechos.get(r.arquivo, ""))
-        out.append(short_name(r.arquivo) + (" (vazamento do exemplo few-shot)" if leak else ""))
+        causa = " (vazamento do exemplo few-shot)" if leaks.get(r.arquivo) else ""
+        out.append(short_name(r.arquivo) + causa)
     return ", ".join(out)
 
 
@@ -447,12 +559,27 @@ def prompt_table(comparison: PromptComparison) -> pd.DataFrame:
 
 
 def prompt_conclusion(comparison: PromptComparison) -> str:
-    """Vencedor pela regra declarada + onde as fichas discordam."""
+    """Vencedor pela regra declarada + onde as fichas discordam + o trade-off do few-shot."""
     verdict = comparison.decide()
     dis = comparison.disagreements()
     campos = sorted({d.field for d in dis})
     onde = f" Discordam em {len(dis)} campo(s): {', '.join(campos)}." if dis else ""
-    return f"{verdict.explanation}{onde} Versão final: {verdict.winner}."
+    texto = f"{verdict.explanation}{onde} Versão final: {verdict.winner}."
+    frame = comparison.to_frame()
+    a, b = comparison.variants
+    if "rate_fewshot_leak" in frame.index:
+        la, lb = _num(frame.loc["rate_fewshot_leak", a]), _num(frame.loc["rate_fewshot_leak", b])
+        fa, fb = _num(frame.loc["rate_fidelity", a]), _num(frame.loc["rate_fidelity", b])
+        if la is not None and lb is not None and la != lb:
+            com, sem = (a, b) if la > lb else (b, a)
+            lc, ls_ = max(la, lb), min(la, lb)
+            fc, fs = (fa, fb) if com == a else (fb, fa)
+            texto += (
+                f" Trade-off: {com} tem fidelidade {pct(fc)} × {pct(fs)}, mas {pct(lc)} das "
+                f"fichas copiam campos do exemplo (× {pct(ls_)} em {sem}); o critério de vitória "
+                "declarado não muda."
+            )
+    return texto
 
 
 def cost_section(
@@ -535,6 +662,100 @@ def coverage_sentence(recall: pd.DataFrame, n_docs: int, final_share: float | No
     )
 
 
+def _milhar(value: int) -> str:
+    """Inteiro com ponto de milhar (``2861`` → ``"2.861"``)."""
+    return f"{value:,}".replace(",", ".")
+
+
+def budget_sentence(
+    curve: pd.DataFrame,
+    recall: pd.DataFrame,
+    docs: Sequence[Document],
+    chosen: str = "hybrid 12k",
+    alternative: str = "hybrid 20k",
+    baseline: str = "semantic",
+) -> str:
+    """Curva de orçamento do ``hybrid`` e a decisão de custo, a partir das tabelas medidas."""
+    rows = {str(r["estrategia"]): r for r in curve.to_dict("records")}
+    base_rows = {str(r["estrategia"]): r for r in recall.to_dict("records")}
+    pontos = " · ".join(
+        f"{nome.removeprefix('hybrid ')}: {pct(_num(r['recall_frases']))}, "
+        f"{int(r['artigos_cobertos'])}/{int(r['artigos_com_frases'])} artigos, "
+        f"~{_milhar(int(r['tokens_por_artigo']))} tok"
+        for nome, r in rows.items()
+    )
+    texto = f"Curva de orçamento do hybrid (recall das frases; artigos; tokens/artigo) — {pontos}."
+    if chosen in rows and docs:
+        escolhido = rows[chosen]
+        artigo_medio = sum(d.n_chars for d in docs) / len(docs)
+        mais_barato = artigo_medio / float(escolhido["chars_medios"])
+        extra = ""
+        if baseline in base_rows:
+            base_chars = float(base_rows[baseline]["chars_medios"])
+            extra = (
+                f" e +{pct(float(escolhido['chars_medios']) / base_chars - 1)} de caracteres "
+                f"sobre o {baseline}"
+            )
+        vezes = f"{mais_barato:.1f}".replace(".", ",")
+        texto += (
+            f" Escolhemos {chosen.removeprefix('hybrid ')} por custo: {vezes}× mais barato que "
+            f"o artigo inteiro{extra}."
+        )
+        if alternative in rows:
+            alt = rows[alternative]
+            mais_tokens = float(alt["tokens_por_artigo"]) / float(escolhido["tokens_por_artigo"])
+            texto += (
+                f" {alternative.removeprefix('hybrid ')} fica documentado como alternativa "
+                f"({int(alt['artigos_cobertos'])}/{int(alt['artigos_com_frases'])} artigos, "
+                f"+{pct(mais_tokens - 1)} de tokens)."
+            )
+    return texto
+
+
+def limitation_outcome(
+    runs: Mapping[str, Sequence[ExtractionRecord]], threshold: float | None = None
+) -> pd.DataFrame:
+    """Por execução: quantas fichas têm ``limitacao`` preenchida, e quantas destas com trecho fiel.
+
+    É a validação a jusante da seleção (ADR 0002): mais frases de limitação no contexto só
+    importam se viram ``limitacao`` preenchida **com evidência verificável** (4.4a).
+    """
+    from ficha.audit import check_fidelity
+    from ficha.audit.fidelity import DEFAULT_FIDELITY_THRESHOLD
+
+    th = DEFAULT_FIDELITY_THRESHOLD if threshold is None else threshold
+    rows = []
+    for nome, recs in runs.items():
+        preenchidas = [r for r in recs if r.ficha is not None and r.ficha.limitacao is not None]
+        fieis = [r for r in preenchidas if check_fidelity(r, th).found]
+        rows.append(
+            {
+                "execucao": nome,
+                "n": len(recs),
+                "limitacao_preenchida": len(preenchidas),
+                "preenchida_com_trecho_fiel": len(fieis),
+                "limitacao_null": len(recs) - len(preenchidas),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def before_after_sentence(outcome: pd.DataFrame, before: str, after: str) -> str:
+    """Frase "antes × depois" da seleção para ``limitacao`` (diz se os nulls não caíram)."""
+    rows = {str(r["execucao"]): r for r in outcome.to_dict("records")}
+    if before not in rows or after not in rows:
+        return ""
+    a, b = rows[before], rows[after]
+    texto = (
+        f"Antes × depois da seleção: limitacao null {int(a['limitacao_null'])}/{int(a['n'])} com "
+        f"{before} → {int(b['limitacao_null'])}/{int(b['n'])} com {after}; preenchidas com trecho "
+        f"fiel: {int(a['preenchida_com_trecho_fiel'])} → {int(b['preenchida_com_trecho_fiel'])}."
+    )
+    if int(b["limitacao_null"]) >= int(a["limitacao_null"]):
+        texto += f" O {after} não reduziu os nulls."
+    return texto
+
+
 def build_report_content(
     *,
     integrantes: Sequence[str],
@@ -547,6 +768,7 @@ def build_report_content(
     narrative: Narrative | None = None,
     figuras: Sequence[Path] = (),
     rule_distributions: Mapping[str, Mapping[str, int]] | None = None,
+    leak_runs: Mapping[str, Sequence[ExtractionRecord]] | None = None,
 ) -> ReportContent:
     """Monta o conteúdo completo do relatório a partir dos resultados medidos.
 
@@ -563,6 +785,8 @@ def build_report_content(
         figuras: PNGs opcionais (entram só se couberem nas 3 páginas).
         rule_distributions: distribuições de confiança por versão da regra (ex.:
             ``{"v1 estrita": {...}, "v2 categórica (final)": {...}}``) para a calibração.
+        leak_runs: execuções rotuladas (a principal primeiro) para o bloco e) de vazamento e o
+            destaque das invenções; sem elas, nenhum dos dois entra no relatório.
 
     """
     nar = narrative or Narrative()
@@ -576,12 +800,14 @@ def build_report_content(
         estabilidade=stability_block(summary),
         entrada=input_block(summary),
         temperatura=temperature_block(summary),
+        vazamento=leakage_block(leak_runs) if leak_runs else None,
     )
-    for key in ("fidelidade", "estabilidade", "entrada", "temperatura"):
-        if key in over:
+    for key in ("fidelidade", "estabilidade", "entrada", "temperatura", "vazamento"):
+        if key in over and getattr(blocks, key) is not None:
             getattr(blocks, key).conclusao = over[key]
-    if nar.nota_limitacao:
-        blocks.entrada.conclusao += f" {nar.nota_limitacao}"
+    for extra in (nar.antes_depois, nar.nota_limitacao):
+        if extra:
+            blocks.entrada.conclusao += f" {extra}"
     dist = summary.confidence_distribution
     # O texto fixo de calibração da regra é um instantâneo; no relatório vale o calculado
     # a partir destes dados (``calibration_sentence``), para não haver dois números.
@@ -619,6 +845,8 @@ def build_report_content(
         figuras=list(figuras),
         estrategia_evidencia=nar.cobertura_limitacao,
         destaque_auditoria=(
-            nar.destaque if nar.destaque is not None else invention_highlight(summary)
+            nar.destaque
+            if nar.destaque is not None
+            else invention_highlight(invention_cases(leak_runs or {}))
         ),
     )

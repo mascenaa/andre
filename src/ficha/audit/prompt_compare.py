@@ -11,6 +11,11 @@ critério lexicográfico declarado (:data:`DEFAULT_WINNER_CRITERIA`):
 2. empate → maior taxa de fidelidade;
 3. empate → maior taxa de null quando devido (abstenção correta).
 
+``rate_fewshot_leak`` é reportado lado a lado mas NÃO entra no critério (declarado antes da
+execução; mudar o critério depois de ver os números seria escolher por intuição). Ele entra na
+confiança de cada ficha (BAIXA) e na discussão: few-shot pode melhorar fidelidade e formato,
+mas abre a porta para copiar o exemplo.
+
 Empate em todos → fica a variante A (por convenção, a de referência), e a explicação diz
 explicitamente que "a técnica não mudou nada" nestes números.
 """
@@ -48,6 +53,7 @@ _METRIC_ROWS: tuple[str, ...] = (
     "n_null_expected",
     "rate_fidelity",
     "rate_page_ok",
+    "rate_fewshot_leak",
     "input_tokens",
     "output_tokens",
 )

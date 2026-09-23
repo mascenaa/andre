@@ -392,6 +392,7 @@ def run_rehearsal(
         cost=comparison,
         cost_per_run=cost_by_run(all_records, premise),
         strategy_table=strategies[["caracteres_medios", "tokens_medios", "tokens_corpus"]],
+        leak_runs={"principal": runs["primary"], "v_sem_fewshot": runs["prompt_alt"]},
     )
     pdf = build_report_pdf(content, s.outputs_dir / f"{basename}.pdf")
     return RehearsalResult(

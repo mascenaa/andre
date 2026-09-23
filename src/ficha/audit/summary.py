@@ -16,6 +16,7 @@ import pandas as pd
 from ficha.audit.confidence import ConfidenceRule, FichaAuditada, build_final_fichas
 from ficha.audit.fidelity import FidelitySummary, fidelity_summary
 from ficha.audit.input_effect import InputEffectReport, input_effect_report
+from ficha.audit.leakage import LeakageSummary, leakage_summary
 from ficha.audit.prompt_compare import PromptComparison, compare_prompt_variants
 from ficha.audit.stability import StabilityReport, stability_report
 from ficha.audit.temperature import TemperatureReport, temperature_report
@@ -67,6 +68,8 @@ class AuditSummary:
     input_effect: InputEffectReport | None = None
     temperature: TemperatureReport | None = None
     prompt_comparison: PromptComparison | None = None
+    leakage: LeakageSummary | None = None
+    """4.4e: vazamento de exemplos few-shot na execução primária."""
 
     @property
     def confidence_distribution(self) -> dict[str, int]:
@@ -88,6 +91,7 @@ class AuditSummary:
             "comparacao_prompts": (
                 self.prompt_comparison.to_dict() if self.prompt_comparison else None
             ),
+            "vazamento_exemplos": self.leakage.to_dict() if self.leakage else None,
             "distribuicao_confianca": self.confidence_distribution,
             "nao_defensaveis": [
                 {"arquivo": f.arquivo, "motivos": list(f.motivos)} for f in self.nao_defensaveis()
@@ -103,6 +107,8 @@ class AuditSummary:
           ``field, change_rate, mean_similarity``.
         - ``entrada_divergencias``: ``arquivo, field, a, b, equal, similarity`` (sim < 0.8).
         - ``entrada_estrategias``, ``temperatura``, ``prompts``: métricas lado a lado.
+        - ``vazamento``: uma linha por campo copiado de exemplo few-shot (``arquivo, run_id,
+          field, example_index, example_name, similarity, method, value, example_value``).
         - ``confianca``: ``confianca, n``.
         - ``fichas``: a tabela final com colunas ``audit_*``.
         - ``nao_defensaveis``: ``arquivo, confianca, motivos``.
@@ -124,6 +130,8 @@ class AuditSummary:
         if self.prompt_comparison:
             out["prompts"] = self.prompt_comparison.to_frame()
             out["prompts_campos"] = self.prompt_comparison.diff.field_frame()
+        if self.leakage:
+            out["vazamento"] = self.leakage.to_frame()
         dist = self.confidence_distribution
         out["confianca"] = pd.DataFrame(
             {"confianca": list(dist), "n": list(dist.values())}, columns=["confianca", "n"]
@@ -160,6 +168,8 @@ def build_audit_summary(
     - ``alt_input``: mesma extração com a outra estratégia de entrada (4.4c).
     - ``t_alt``: subconjunto com a temperatura alternativa (4.4d), comparado com ``primary``.
     - ``prompt_runs``: ``(variante A, variante B)`` da medição obrigatória da 4.2.
+
+    O vazamento de exemplos few-shot (4.4e) é sempre calculado sobre ``primary``.
     """
     rule = rule or ConfidenceRule()
     th = rule.fidelity_threshold
@@ -167,6 +177,7 @@ def build_audit_summary(
         fidelity=fidelity_summary(primary, th),
         fichas=build_final_fichas(primary, stability_rep, alt_input, rule),
         rule=rule,
+        leakage=leakage_summary(primary, threshold=rule.leakage_threshold),
         stability=stability_report(primary, stability_rep) if stability_rep is not None else None,
         input_effect=(
             input_effect_report(

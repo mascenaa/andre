@@ -10,6 +10,9 @@ Denominadores (declarados):
 - ``rate_null_when_expected``: fichas válidas de artigos em que a limitação **não** é
   declarada, segundo o gabarito (se fornecido) ou, na falta dele, a heurística de vocabulário
   de :func:`ficha.audit.fidelity.check_limitacao_support`. ``None`` se não há nenhum caso.
+- ``rate_fewshot_leak``: todos os registros; fichas com algum campo copiado de um exemplo
+  few-shot (:mod:`ficha.audit.leakage`). Numa variante SEM few-shot a comparação é com os
+  mesmos exemplos, e a taxa funciona como controle (falso positivo esperado ≈ 0).
 - ``rate_filled_when_unexpected``: o erro grave — fichas desses mesmos artigos com
   ``limitacao`` preenchida (``1 - rate_null_when_expected``).
 """
@@ -26,6 +29,7 @@ from ficha.audit.fidelity import (
     check_limitacao_support,
     fidelity_summary,
 )
+from ficha.audit.leakage import leakage_summary
 from ficha.types import ExtractionRecord, ParseStatus
 
 NullGroundTruth = Literal["gabarito", "heuristica_vocabulario"]
@@ -51,6 +55,8 @@ class RunStats:
     null_ground_truth: NullGroundTruth
     rate_fidelity: float
     rate_page_ok: float
+    rate_fewshot_leak: float
+    """Fichas com algum campo copiado de um exemplo few-shot / todos os registros."""
     input_tokens: int
     output_tokens: int
 
@@ -105,6 +111,7 @@ def run_stats(
         else "heuristica_vocabulario",
         rate_fidelity=fid.rate_found,
         rate_page_ok=fid.rate_page_ok,
+        rate_fewshot_leak=leakage_summary(records).rate,
         input_tokens=sum(r.usage.input_tokens for r in records),
         output_tokens=sum(r.usage.output_tokens for r in records),
     )

@@ -88,7 +88,9 @@ def test_notebook_runs_end_to_end_in_rehearsal_mode(tmp_path: Path, monkeypatch)
     with pymupdf.open(pdf) as doc:
         assert 1 <= doc.page_count <= 3
     runs = [d for d in (tmp_path / "data" / "outputs" / "ensaio" / "runs").iterdir() if d.is_dir()]
-    assert len(runs) == 5
+    # 5 da matriz (estratégia principal hybrid) + a execução semantic de "antes" (seção 8c)
+    assert len(runs) == 6
+    assert any("_semantic_v_full_t0.0_rep1" in d.name for d in runs)
 
 
 @pytest.mark.skipif(not (ROOT / "notebooks").exists(), reason="sem diretório de notebooks")

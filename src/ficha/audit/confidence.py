@@ -20,6 +20,8 @@ from ficha.audit.fidelity import (
     check_fidelity,
     check_limitacao_support,
 )
+from ficha.audit.leakage import DEFAULT_LEAKAGE_THRESHOLD, LeakageResult, check_fewshot_leakage
+from ficha.prompts import FewShotExample
 from ficha.schema import Confianca, Evidencia, Ficha
 from ficha.types import ExtractionRecord, ParseStatus
 
@@ -66,6 +68,13 @@ class ConfidenceRule:
     "limitations of generative AI in academic writing") — a palavra aparece sem ser limitação
     declarada do próprio trabalho.
     """
+    check_leakage: bool = True
+    """Se ``True``, qualquer campo copiado de um exemplo few-shot → BAIXA (verificação 4.4e)."""
+    leakage_threshold: float = DEFAULT_LEAKAGE_THRESHOLD
+    """Similaridade mínima com o campo do exemplo para contar como cópia."""
+    check_leakage_terms: bool = True
+    """Se ``True`` (e ``check_leakage``), termo de domínio do exemplo na ficha sem equivalente
+    no texto enviado → BAIXA (contaminação parcial; ver :data:`EXAMPLE_MARKER_TERMS`)."""
     input_effect_mode: InputEffectMode = "categorical"
     """Como contar "campos que mudaram" entre ESTRATÉGIAS de entrada (4.4c).
 
@@ -132,13 +141,29 @@ class ConfidenceRule:
             if self.check_limitacao
             else ""
         )
+        vaz = (
+            ", ou algum campo textual (problema, dados, metodo, metrica, limitacao, "
+            "evidencia.trecho) reproduz o campo homólogo de um exemplo few-shot do prompt "
+            f"(similaridade ≥ {self.leakage_threshold:.2f}; trecho também contra o texto do "
+            "exemplo)"
+            + (
+                ", ou algum campo contém um termo de domínio exclusivo dos exemplos (fraude, "
+                "chargeback, supermercados, vendas, WMAPE, suavização exponencial...) cujo "
+                "equivalente em inglês não aparece no texto enviado"
+                if self.check_leakage_terms
+                else ""
+            )
+            + " — cópia do exemplo é invenção, mesmo quando o trecho passa na fidelidade"
+            if self.check_leakage
+            else ""
+        )
         return (
             f"Regra de confiança {self.version} (aplicada automaticamente; o nível final é o "
             "MENOR entre os limites abaixo):\n"
             "- BAIXA se a extração falhou (nenhum JSON válido segundo o esquema), "
             "ou o trecho de evidência não foi encontrado no texto enviado ao modelo "
             f"(similaridade partial_ratio normalizada < {self.fidelity_threshold:.2f})"
-            f"{pag}, ou {baixa_cmp}.\n"
+            f"{pag}{vaz}, ou {baixa_cmp}.\n"
             f"- MEDIA se a evidência passou, mas {media_cmp}, ou se alguma comparação não pôde "
             "ser feita (ausente ou sem ficha válida do outro lado): o que não foi verificado "
             f"não recebe ALTA.{lim}\n"
@@ -155,6 +180,7 @@ class ConfidenceRule:
         n_changed_fields_input: int | None,
         parse_status: ParseStatus,
         limitacao_supported: bool | None = None,
+        leakage: LeakageResult | None = None,
     ) -> tuple[Confianca, list[str]]:
         """Nível de confiança e os motivos que o limitaram.
 
@@ -163,6 +189,8 @@ class ConfidenceRule:
         :func:`build_final_fichas` faz). ``limitacao_supported=False`` (veredito
         ``preenchida_sem_suporte``) limita a MEDIA quando ``check_limitacao`` está ligado;
         ``True``/``None`` não têm efeito — ``null_suspeito`` conta como ``True``.
+        ``leakage`` (ver :func:`check_fewshot_leakage`): cada campo copiado de um exemplo
+        few-shot limita a BAIXA, com um motivo por campo (se ``check_leakage``).
         Para ALTA, a lista traz uma única frase com o que foi confirmado.
         """
         level = Confianca.ALTA
@@ -179,6 +207,30 @@ class ConfidenceRule:
                 "extração falhou: o modelo não devolveu ficha válida (parse FAILED)",
             )
             return level, reasons
+
+        if self.check_leakage and leakage is not None:
+            for lf in leakage.leaked:
+                if lf.similarity >= self.leakage_threshold:
+                    cap(
+                        Confianca.BAIXA,
+                        f"campo {lf.field} copiado do exemplo few-shot "
+                        f"(similaridade {lf.similarity:.2f})",
+                    )
+            if self.check_leakage_terms:
+                # Um motivo por campo, listando os termos (evita dezenas de motivos numa ficha).
+                terms: dict[str, list[str]] = {}
+                for lf in leakage.leaked_terms:
+                    terms.setdefault(lf.field, []).append(f"'{lf.example_value}'")
+                for fname, ts in terms.items():
+                    plural = len(ts) > 1
+                    cap(
+                        Confianca.BAIXA,
+                        f"campo {fname} contém {', '.join(ts)}, "
+                        + ("termos" if plural else "termo")
+                        + " do exemplo few-shot "
+                        + ("ausentes" if plural else "ausente")
+                        + " do texto enviado",
+                    )
 
         found = fidelity.method != "none" and fidelity.score >= self.fidelity_threshold
         if not found:
@@ -241,6 +293,7 @@ class FichaAuditada:
     parse_status: ParseStatus = ParseStatus.OK
     run_id: str = ""
     limitacao: LimitacaoCheck | None = None
+    leakage: LeakageResult | None = None
     diffs_stability: list[str] = field(default_factory=list)
     """Campos que mudaram entre repetições."""
     diffs_input: list[str] = field(default_factory=list)
@@ -276,6 +329,9 @@ class FichaAuditada:
                 "audit_campos_instaveis": ", ".join(self.diffs_stability),
                 "audit_campos_divergentes_entrada": ", ".join(self.diffs_input),
                 "audit_limitacao": self.limitacao.verdict if self.limitacao else None,
+                "audit_vazamento_fewshot": (
+                    ", ".join(self.leakage.leaked_fields) if self.leakage else ""
+                ),
                 "audit_parse_status": self.parse_status.value,
                 "audit_run_id": self.run_id,
             }
@@ -312,6 +368,7 @@ def build_final_fichas(
     stability_rep: Sequence[ExtractionRecord] | None,
     alt_input: Sequence[ExtractionRecord] | None,
     rule: ConfidenceRule | None = None,
+    examples: Sequence[FewShotExample] | None = None,
 ) -> list[FichaAuditada]:
     """Monta as fichas finais com ``confianca`` segundo ``rule``.
 
@@ -321,6 +378,9 @@ def build_final_fichas(
 
     ``n_changed_input`` é contado conforme ``rule.input_effect_mode`` (exato em ``strict``,
     só discordâncias categóricas de ``limitacao`` em ``categorical``).
+
+    ``examples``: exemplos few-shot para a verificação de vazamento (padrão:
+    ``ficha.prompts.FEW_SHOT_EXAMPLES``).
 
     Registros com extração falha viram fichas ``EXTRAÇÃO FALHOU`` com ``BAIXA``, para que a
     tabela tenha sempre uma linha por artigo.
@@ -338,7 +398,8 @@ def build_final_fichas(
         lim = check_limitacao_support(rec)
         # Sem ficha é falha, qualquer que seja o status gravado.
         status = ParseStatus.FAILED if rec.ficha is None else rec.parse_status
-        level, motivos = rule.assign(fid, n_stab, n_inp, status, lim.supported)
+        leak = check_fewshot_leakage(rec, examples, rule.leakage_threshold)
+        level, motivos = rule.assign(fid, n_stab, n_inp, status, lim.supported, leak)
         if rec.ficha is None:
             ficha = failed_ficha(rec.arquivo)
         else:
@@ -353,6 +414,7 @@ def build_final_fichas(
                 parse_status=status,
                 run_id=rec.run_id,
                 limitacao=lim,
+                leakage=leak,
                 diffs_stability=f_stab,
                 diffs_input=f_inp,
             )

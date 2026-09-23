@@ -186,3 +186,68 @@ de fato diferentes, então o limiar não separa "reescreveu" de "discorda".
 produz a confiança e os motivos por artigo sob as duas regras lado a lado;
 `confidence_distribution(fichas)` dá a distribuição de cada uma. O texto de cada regra
 (`describe()`) inclui o modo ativo e esta justificativa numérica.
+
+## Verificação e) Vazamento de exemplos few-shot (2026-09-23)
+
+**Contexto.** Na execução híbrida, 06_Barnes_2016 (previsão de explosões solares) saiu com
+`limitacao` = "Os rótulos vêm de chargebacks, então fraudes nunca contestadas pelos clientes
+ficam fora do ground truth": a limitação do **exemplo few-shot** de fraude em cartão. A
+fidelidade passa (o trecho é do artigo, na página certa) e a heurística de limitação também
+(o contexto tem vocabulário de limitação). É a "invenção convincente" que a rubrica premia
+detectar — e nenhuma das verificações a) a d) a pegava. O mesmo vazamento já aparecia em
+`evidencia.trecho` (08_Leka, execução semantic).
+
+**Decisão.** `ficha.audit.leakage.check_fewshot_leakage(record)` compara cada campo textual da
+ficha (`problema, dados, metodo, metrica, limitacao, evidencia.trecho`) com os exemplos de
+`ficha.prompts.FEW_SHOT_EXAMPLES`, por dois métodos:
+
+1. **Similaridade com o campo homólogo** do exemplo, após `normalize_for_match`: o máximo entre
+   `fuzz.ratio` e `fuzz.partial_ratio` (este só quando a string mais curta tem ≥ 40
+   caracteres — com "AUPRC" contra a métrica do exemplo ele daria 1.0 por coincidência de
+   sigla). O `evidencia.trecho` também é comparado com o **texto de entrada** do exemplo
+   (`partial_ratio`), porque copiar qualquer frase do exemplo é vazamento. Vazou se ≥ **0.80**.
+   Calibração nas execuções reais (450 comparações campo × melhor exemplo, fichas sem
+   vazamento): média 0.45, mediana 0.46, máximo 0.77. As cópias ficam em 0.93–1.00
+   (Barnes: 1.00 em `limitacao`; Leka: 0.97–1.00 em dados, metodo, metrica e trecho). O
+   limiar fica no vão entre as duas populações.
+2. **Termos de domínio exclusivos dos exemplos** (`EXAMPLE_MARKER_TERMS`: fraude, chargeback,
+   cartão de crédito, emissor, transações; supermercados, varejo, vendas, estoque, promoções,
+   feriados, WMAPE, suavização exponencial) presentes na ficha **sem** o equivalente em inglês
+   no texto enviado. Esse método pega a **contaminação parcial**, que a similaridade do campo
+   inteiro não pega. Os exemplos foram escritos de propósito em domínios alheios aos artigos
+   (fraude e varejo contra física solar), então esses termos funcionam como marcadores. Se o
+   artigo falar de fato de vendas ("sales"), o termo é legítimo e não conta.
+
+`None` nunca vaza (abster-se não é copiar). Na regra de confiança, v1 e v2, **qualquer**
+vazamento limita a **BAIXA**, com um motivo por campo: "campo limitacao copiado do exemplo
+few-shot (similaridade 1.00)" e "campo dados contém 'supermercados', termo do exemplo few-shot
+ausente do texto enviado". Os dois métodos podem ser desligados (`check_leakage`,
+`check_leakage_terms`) e o limiar é `leakage_threshold`.
+
+**Resultado nas execuções reais** (medido; leitura de `data/runs/`, sem escrita):
+
+| execução | fichas com vazamento | casos |
+|---|---|---|
+| semantic v_full t0 (rep1 e rep2) | 2/18 | 08_Leka (exemplo 2 inteiro: dados, metodo, metrica, trecho); 09_AsensioRamos ("magnetogramas ... de **supermercados brasileiros**": similaridade 0.77, só o termo pega) |
+| semantic v_sem_fewshot t0 | 0/18 | controle: sem exemplos no prompt, nenhum falso positivo |
+| first_pages v_full t0 | 3/18 | 08_Leka e D03_Sun (métrica "WMAPE ... 13 semanas"), 16_Nishizuka ("comparado com a suavização exponencial") |
+| semantic v_full t0.7 (subconjunto) | 0/6 | — |
+| hybrid v_full t0 | 1/16 (execução em andamento) | 06_Barnes (`limitacao` do exemplo 1) |
+
+**Na comparação de prompts**, `RunStats.rate_fewshot_leak` aparece lado a lado. Few-shot
+melhora formato e fidelidade, mas abre a porta para copiar o exemplo. A variante sem few-shot
+tem 0 por construção e serve de controle de falso positivo. A taxa **não** entra no critério
+de vitória, que foi declarado antes de ver os dados; mudá-lo agora seria escolher por
+intuição. Ela entra na confiança de cada ficha e na discussão do relatório.
+
+**Alternativas rejeitadas.**
+- *Só o trecho* (o check ad hoc anterior): não pega Barnes (`limitacao`) nem a contaminação
+  parcial.
+- *Só similaridade*: não pega 09_AsensioRamos (0.77) nem 16_Nishizuka (0.63). Baixar o limiar
+  para alcançá-los cruzaria a população legítima (máximo 0.77).
+- *Embeddings*: aproximariam paráfrases legítimas do mesmo tipo de campo ("dados de X de 2010
+  a 2020; volume não informado") e dariam falsos positivos. O que caracteriza a cópia é a
+  forma literal ou o vocabulário de outro domínio, não o sentido.
+
+**Consequência.** A lista de marcadores está acoplada aos exemplos. Um teste confere que cada
+termo existe no seu exemplo, então mudar os exemplos obriga a revisar a lista.

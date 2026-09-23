@@ -6,6 +6,7 @@
 - :mod:`~ficha.audit.stability`      — 4.4b: repetição sem mudar nada.
 - :mod:`~ficha.audit.input_effect`   — 4.4c: duas estratégias de entrada.
 - :mod:`~ficha.audit.temperature`    — 4.4d: outra temperatura num subconjunto.
+- :mod:`~ficha.audit.leakage`        — 4.4e: campos copiados dos exemplos few-shot.
 - :mod:`~ficha.audit.prompt_compare` — 4.2: duas versões do prompt e o vencedor por regra.
 - :mod:`~ficha.audit.confidence`     — regra declarada de ``confianca`` e fichas finais.
 - :mod:`~ficha.audit.summary`        — tudo junto, em tabelas.
@@ -28,6 +29,13 @@ from ficha.audit.fidelity import (
     fidelity_summary,
 )
 from ficha.audit.input_effect import InputEffectReport, input_effect_report
+from ficha.audit.leakage import (
+    LeakageResult,
+    LeakageSummary,
+    LeakedField,
+    check_fewshot_leakage,
+    leakage_summary,
+)
 from ficha.audit.normalize import normalize_for_match, split_context_pages
 from ficha.audit.prompt_compare import PromptComparison, PromptVerdict, compare_prompt_variants
 from ficha.audit.runstats import RunStats, run_stats
@@ -53,6 +61,9 @@ __all__ = [
     "FidelitySummary",
     "FieldDiff",
     "InputEffectReport",
+    "LeakageResult",
+    "LeakageSummary",
+    "LeakedField",
     "LimitacaoCheck",
     "PromptComparison",
     "PromptVerdict",
@@ -61,6 +72,7 @@ __all__ = [
     "TemperatureReport",
     "build_audit_summary",
     "build_final_fichas",
+    "check_fewshot_leakage",
     "check_fidelity",
     "check_limitacao_support",
     "compare_prompt_variants",
@@ -70,6 +82,7 @@ __all__ = [
     "fichas_nao_defensaveis",
     "fidelity_summary",
     "input_effect_report",
+    "leakage_summary",
     "normalize_for_match",
     "run_stats",
     "split_context_pages",

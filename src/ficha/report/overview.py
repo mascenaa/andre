@@ -8,6 +8,7 @@ aproximação declarada de ~4 caracteres por token no modo de ensaio).
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+from typing import Any
 
 import pandas as pd
 
@@ -74,3 +75,34 @@ def strategy_summary(selection: pd.DataFrame) -> pd.DataFrame:
             "fracao_media_do_artigo": grouped["fracao_do_artigo"].mean().round(3),
         }
     )
+
+
+def budget_curve(
+    docs: Sequence[Document],
+    base: Any,
+    budgets: Sequence[int | None],
+    chars_per_token: float = 4.0,
+) -> pd.DataFrame:
+    """Recall das frases de limitação do ``hybrid`` em vários orçamentos (ADR 0002).
+
+    ``base`` é o :class:`ficha.select.hybrid.HybridSelector` já construído: reaproveitamos o
+    seu seletor semântico (com os embeddings em cache) e mudamos só ``max_chars``. Tokens por
+    artigo usam a aproximação declarada de ``chars_per_token`` caracteres por token.
+    """
+    from ficha.select import recall_table
+    from ficha.select.hybrid import HybridSelector
+
+    selectors: dict[str, ContextSelector] = {}
+    for b in budgets:
+        label = f"hybrid {b // 1000}k" if b else "hybrid sem teto"
+        selectors[label] = HybridSelector(
+            base.semantic,
+            base.keyword,
+            max_chars=b,
+            tail_pages=base.tail_pages,
+            cue_windows=base.cue_windows,
+        )
+    table = recall_table(docs, selectors)
+    table["max_chars"] = list(budgets)
+    table["tokens_por_artigo"] = (table["chars_medios"] / chars_per_token).round().astype("int64")
+    return table

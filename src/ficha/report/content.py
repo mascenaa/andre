@@ -108,16 +108,19 @@ class AuditBlock:
 
 @dataclass(slots=True)
 class AuditResults:
-    """As quatro verificações mínimas da Seção 4.4, cada uma obrigatória."""
+    """As quatro verificações mínimas da Seção 4.4 (obrigatórias) e a de vazamento (opcional)."""
 
     fidelidade: AuditBlock
     estabilidade: AuditBlock
     entrada: AuditBlock
     temperatura: AuditBlock
+    vazamento: AuditBlock | None = None
+    """Opcional: e) campos copiados dos exemplos few-shot (além do mínimo do enunciado)."""
 
     def blocks(self) -> list[AuditBlock]:
-        """Os quatro blocos, na ordem a)–d) do enunciado."""
-        return [self.fidelidade, self.estabilidade, self.entrada, self.temperatura]
+        """Os blocos na ordem a)–d) do enunciado, mais e) quando houver."""
+        base = [self.fidelidade, self.estabilidade, self.entrada, self.temperatura]
+        return base + ([self.vazamento] if self.vazamento is not None else [])
 
 
 @dataclass(slots=True)
