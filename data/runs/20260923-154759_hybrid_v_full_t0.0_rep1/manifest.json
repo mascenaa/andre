@@ -25,7 +25,60 @@
   },
   "estrategia": {
     "nome": "hybrid",
-    "params": {}
+    "params": {
+      "max_chars": 12000,
+      "tail_pages": 0,
+      "cue_windows": 10,
+      "priority": [
+        "limitations",
+        "cues",
+        "semantic",
+        "closing",
+        "tail"
+      ],
+      "limitation_sections": [
+        "limitations"
+      ],
+      "closing_sections": [
+        "discussion",
+        "conclusion",
+        "outlook"
+      ],
+      "keyword_window_chars": 1500,
+      "semantic": {
+        "embedder": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+        "top_k": 6,
+        "chunk_size": 1200,
+        "overlap": 200,
+        "max_chars": 8000,
+        "merge_overlaps": true,
+        "queries": [
+          "qual problema este trabalho tenta resolver e qual é o objetivo do estudo",
+          "que dados foram usados: fonte, período e volume do conjunto de dados",
+          "qual é o método ou a abordagem principal proposta pelos autores",
+          "como o desempenho foi medido",
+          "métricas de avaliação e resultados numéricos obtidos",
+          "o que este trabalho não consegue fazer",
+          "limitações declaradas pelos autores e ameaças à validade do estudo",
+          "principais resultados e contribuições do artigo"
+        ]
+      },
+      "chars_por_fonte": {
+        "limitations": 0,
+        "cues": 2279,
+        "semantic": 9706,
+        "closing": 0,
+        "tail": 0
+      },
+      "candidatos_fora_do_orcamento": {
+        "limitations": 0,
+        "cues": 0,
+        "semantic": 18,
+        "closing": 2,
+        "tail": 0
+      },
+      "n_pieces": 17
+    }
   },
   "geracao": {
     "temperature": 0.0,
@@ -59,6 +112,27 @@
     "D04_Jiao_2020_Flare_Intensity_Prediction_ML.pdf"
   ],
   "iniciado_em": "2026-09-23T18:47:59.091007+00:00",
-  "concluido_em": null,
-  "status_execucao": "em_andamento"
+  "concluido_em": "2026-09-23T18:58:49.323460+00:00",
+  "status_execucao": "concluida",
+  "modelo_reportado": [
+    "Qwen/Qwen2.5-3B-Instruct"
+  ],
+  "resumo": {
+    "n_registros": 19,
+    "status": {
+      "ok": 19,
+      "repaired": 0,
+      "failed": 0
+    },
+    "json_valido_de_primeira": 19,
+    "taxa_json_valido_de_primeira": 1.0,
+    "limitacao_null": 16,
+    "reparos": {},
+    "usage": {
+      "input_tokens": 92229,
+      "output_tokens": 4628,
+      "total_tokens": 96857
+    },
+    "latencia_total_s": 624.77
+  }
 }

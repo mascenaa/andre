@@ -230,24 +230,27 @@ def cells(integrantes: list[str]) -> list[nbformat.NotebookNode]:
             """
             ## 4. O que mandar para o modelo (Seção 4.1)
 
-            Três estratégias implementadas, todas com a mesma interface (`ContextSelector`):
+            Quatro estratégias, todas com a mesma interface (`ContextSelector`, ADR 0002):
 
             | Estratégia | O que envia | Risco |
             |---|---|---|
-            | `first_pages` | as N primeiras páginas | limitações e métricas costumam estar no fim |
+            | `first_pages` | as 3 primeiras páginas | limitações e métricas costumam ficar fora |
             | `keyword` | seções achadas por título (*Methods*, *Results*, *Limitations*...) | depende do nome da seção |
-            | `semantic` | blocos de ~1.200 caracteres (sobreposição de 200) mais próximos de consultas sobre problema, dados, método, métrica e limitação | depende da qualidade do embedding |
+            | `semantic` | blocos de 1.200 caracteres (sobreposição de 200) mais próximos de 8 consultas em português, uma ou duas por campo da ficha | a limitação declarada raramente é o bloco mais parecido |
+            | `hybrid` | janelas após cabeçalhos de limitação + até 10 janelas em torno de pistas lexicais de limitação + os blocos do `semantic` + janelas de Discussion/Conclusion, num orçamento de 12.000 caracteres | parte do ganho é medição que se autoconfirma (ver abaixo) |
 
-            **Escolha: `semantic`**, com `keyword` como alternativa (ADR 0002). Blocos de 1.200
-            caracteres (~300 tokens, um parágrafo típico, a unidade em que autores declaram uma
-            limitação) com sobreposição de 200 (uma frase inteira: a evidência não é cortada);
-            8 consultas em português, uma ou duas por campo da ficha — incluindo "como o
-            desempenho foi medido" e "o que este trabalho não consegue fazer" —, embedder
-            multilíngue (as consultas são em português, os artigos em inglês) e blocos
-            reordenados por página. A busca vetorial aqui **não é o produto** — é só o modo de
-            escolher o que entra no prompt. A verificação 4.4c (seção 8)
-            testa essa escolha contra `first_pages`. Abaixo: o que cada estratégia envia para um
-            artigo, e o custo em tokens de cada uma no corpus inteiro.
+            **Como chegamos à escolha.** A escolha é `semantic` (blocos de ~300 tokens, um parágrafo
+            típico; sobreposição de uma frase para não cortar a evidência; embedder multilíngue
+            porque as consultas são em português e os artigos em inglês), com `first_pages` como
+            alternativa da verificação 4.4c. Na execução real, `limitacao` veio `null` em 18 das
+            19 fichas. Antes de mexer no prompt, medimos se a **entrada** tinha a informação
+            (tabela a seguir): quase nenhuma frase de limitação chegava ao contexto. Construímos
+            então a estratégia **`hybrid`**, que prioriza janelas de limitação, e a rodamos como
+            **experimento**: ela corrige a entrada, mas — como mostra a comparação a três da seção
+            8c — não muda a saída. Pelo critério declarado da 4.4c, a final continua `semantic`.
+            A busca vetorial aqui **não é o produto** — é só o modo de escolher o que entra no
+            prompt. Abaixo: o que cada estratégia envia para um artigo, e o custo em tokens de
+            cada uma no corpus inteiro.
             """
         ),
         code(
@@ -261,7 +264,7 @@ def cells(integrantes: list[str]) -> list[nbformat.NotebookNode]:
                     print("ATENÇÃO: sentence-transformers ausente; usando HashingEmbedder (declare no relatório).")
             else:
                 embedder = None  # SentenceTransformer multilíngue das Settings
-            ESTRATEGIA = os.environ.get("FICHA_ESTRATEGIA", "semantic")  # principal (4.1)
+            ESTRATEGIA = os.environ.get("FICHA_ESTRATEGIA", "semantic")  # principal (4.1, ADR 0002)
             ESTRATEGIA_ALT = "first_pages"  # comparação 4.4c
             nomes = dict.fromkeys([*SELECTOR_NAMES, ESTRATEGIA, ESTRATEGIA_ALT])
             selectors = {nome: build_selector(nome, settings, embedder) for nome in nomes}
@@ -319,6 +322,42 @@ def cells(integrantes: list[str]) -> list[nbformat.NotebookNode]:
                 for d in docs[:4]:
                     paginas = sorted({p for p, _ in _select.limitation_sentences(d)})
                     print(f"  {d.arquivo[:30]}: frases de limitação nas páginas {paginas} de {d.n_pages}")
+            """
+        ),
+        md(
+            """
+            ### Quanto orçamento dar ao `hybrid`?
+
+            O recall cresce com o orçamento quase linearmente. A curva abaixo reaproveita o mesmo
+            seletor (embeddings em cache) e muda só o teto de caracteres. Escolhemos **12k** por
+            custo e documentamos **20k** como alternativa (cobre todos os artigos que têm frases de
+            limitação, com mais tokens por chamada).
+
+            **Ressalva de circularidade (ADR 0002).** As pistas de seleção e o regex de medição
+            compartilham cinco termos (limitation, caveat, drawback, shortcoming, beyond the scope):
+            parte do ganho é medição que se autoconfirma. No controle com as frases sem nenhuma
+            pista, as pistas não ajudam com 12k (o ganho vem do orçamento); o ganho real aparece nas
+            limitações explícitas revisadas à mão. A validação final é a jusante: `limitacao`
+            preenchida com trecho fiel, comparando `semantic` × `hybrid` na seção 8c.
+            """
+        ),
+        code(
+            """
+            from ficha.report.assemble import budget_sentence
+            from ficha.report.overview import budget_curve
+
+            ORCAMENTO_HYBRID = ""
+            if recall_table is not None and "hybrid" in selectors:
+                curva = budget_curve(docs, selectors["hybrid"], [12000, 16000, 20000, None])
+                display(curva[["estrategia", "artigos_cobertos", "frases_no_contexto", "recall_frases",
+                               "chars_medios", "tokens_por_artigo"]])
+                ORCAMENTO_HYBRID = budget_sentence(curva, recall, docs)
+                print(ORCAMENTO_HYBRID)
+            CIRCULARIDADE = (
+                "Ressalva: as pistas de seleção e o regex de medição compartilham cinco termos; nas "
+                "frases sem pista, as pistas não ajudam com 12k — o ganho real está nas limitações "
+                "explícitas revisadas à mão (ADR 0002)."
+            ) if MODO == "real" else ""
             """
         ),
         # ------------------------------------------------------------------ 5. prompt
@@ -427,10 +466,16 @@ def cells(integrantes: list[str]) -> list[nbformat.NotebookNode]:
                 "entrada_alt": rodar(ESTRATEGIA_ALT, "v_full", settings.temperature, 1, docs),
                 "temperatura_alt": rodar(ESTRATEGIA, "v_full", settings.temperature_alt, 1, SUBCONJUNTO_T),
             }
+            # Experimento de entrada (ADR 0002): a execução principal com a outra estratégia
+            # semântica. No modo real só é carregada se já estiver gravada — nunca reexecutada aqui.
+            EXPERIMENTO = "hybrid" if ESTRATEGIA != "hybrid" else "semantic"
+            extras = {}
+            if MODO == "ensaio" or execucao_gravada(EXPERIMENTO, "v_full", settings.temperature, 1, docs):
+                extras["experimento"] = rodar(EXPERIMENTO, "v_full", settings.temperature, 1, docs)
             display(pd.DataFrame([
                 {"execucao": k, "run_id": r.run_id, **r.status_counts(),
                  "json_valido_de_primeira": r.manifest["resumo"]["taxa_json_valido_de_primeira"]}
-                for k, r in execucoes.items()
+                for k, r in {**execucoes, **extras}.items()
             ]))
             """
         ),
@@ -476,8 +521,11 @@ def cells(integrantes: list[str]) -> list[nbformat.NotebookNode]:
             )
             tabela_prompts = comparacao.to_frame()
             display(tabela_prompts)
+            from ficha.report.assemble import prompt_conclusion
+
             veredito = comparacao.decide()
             print("Vencedora:", veredito.winner, "—", veredito.explanation)
+            print(prompt_conclusion(comparacao))  # inclui o trade-off few-shot × vazamento
             divergencias = pd.DataFrame([d.to_dict() for d in comparacao.disagreements()])
             display(divergencias.head(10) if not divergencias.empty else "As fichas das duas versões não discordam.")
 
@@ -506,6 +554,10 @@ def cells(integrantes: list[str]) -> list[nbformat.NotebookNode]:
             - **b) Estabilidade** — execução repetida sem mudar nada; diferença campo a campo.
             - **c) Efeito da entrada** — `semantic` × `first_pages` nos mesmos artigos.
             - **d) Efeito da temperatura** — 0,0 × 0,7 num subconjunto.
+            - **e) Vazamento de exemplos few-shot** (além do mínimo) — cada campo da ficha é
+              comparado com o campo homólogo dos exemplos do prompt (e o trecho, com o texto do
+              exemplo). Pega a invenção que a fidelidade não vê: um campo copiado do exemplo com
+              trecho de evidência correto.
             """
         ),
         code(
@@ -574,11 +626,65 @@ def cells(integrantes: list[str]) -> list[nbformat.NotebookNode]:
             display(Image(filename=str(fig_entrada)))
             """
         ),
+        md(
+            """
+            **Comparação a três (validação a jusante do ADR 0002).** A estratégia principal, a
+            alternativa da 4.4c e o experimento, lado a lado, lidos das execuções gravadas. Mais
+            frases de limitação no contexto só importam se virarem `limitacao` **legítima**:
+            preenchida, que não é sentinela ("Não informado") nem cópia do exemplo few-shot. A
+            conclusão usa o critério declarado da 4.4c (taxa de página correta).
+            """
+        ),
+        code(
+            """
+            from ficha.report.assemble import strategy_comparison, strategy_verdict
+
+            runs_estrategias = {
+                f"{ESTRATEGIA} (principal)": execucoes["principal"].records,
+                f"{ESTRATEGIA_ALT} (alternativa 4.4c)": execucoes["entrada_alt"].records,
+            }
+            if "experimento" in extras:
+                runs_estrategias[f"{EXPERIMENTO} (experimento)"] = extras["experimento"].records
+            recall_por_estrategia = recall if recall_table is not None else None
+            comparacao_estrategias = strategy_comparison(runs_estrategias, recall_por_estrategia)
+            display(comparacao_estrategias)
+            ANTES_DEPOIS = strategy_verdict(
+                comparacao_estrategias, f"{ESTRATEGIA} (principal)", f"{EXPERIMENTO} (experimento)",
+                recall_por_estrategia,
+            )
+            print(ANTES_DEPOIS or "Sem execução do experimento gravada para comparar.")
+            """
+        ),
         code(
             """
             mostrar(temperature_block(resumo))
             print("Critério declarado:", resumo.temperature.criterio)
             display(tabelas["temperatura"])
+            """
+        ),
+        md(
+            """
+            **e) Vazamento de exemplos few-shot.** Execução principal, a execução `semantic`
+            anterior (quando existe) e a variante sem few-shot — que não pode vazar por construção,
+            servindo de controle.
+            """
+        ),
+        code(
+            """
+            from ficha.audit import leakage_summary
+            from ficha.report.assemble import invention_cases, invention_highlight, leakage_block
+
+            runs_vazamento = {f"{ESTRATEGIA} (principal)": execucoes["principal"].records}
+            if "experimento" in extras:
+                runs_vazamento[f"{EXPERIMENTO} (experimento)"] = extras["experimento"].records
+            runs_vazamento["v_sem_fewshot"] = execucoes["prompt_alt"].records
+            mostrar(leakage_block(runs_vazamento))
+            for rotulo, recs in runs_vazamento.items():
+                casos = leakage_summary(recs).to_frame()
+                if not casos.empty:
+                    print(f"\\n{rotulo}:")
+                    display(casos[["arquivo", "field", "example_name", "similarity", "method", "value"]])
+            print("\\n" + invention_highlight(invention_cases(runs_vazamento)))
             """
         ),
         # ------------------------------------------------------------------ 9. confiança
@@ -645,8 +751,9 @@ def cells(integrantes: list[str]) -> list[nbformat.NotebookNode]:
             """
             ## 10. Custo (Seção 4.5)
 
-            Somamos o `Usage` de **todas** as chamadas feitas (as cinco execuções, inclusive
-            repetição, prompt alternativo, entrada alternativa e temperatura). A alternativa
+            Somamos o `Usage` de **todas** as chamadas feitas — todas as execuções gravadas em
+            `data/runs`, inclusive repetição, prompt alternativo, entrada alternativa, temperatura
+            e **o experimento `hybrid`** (a Seção 4.5 pede tudo o que foi enviado). A alternativa
             ingênua espelha exatamente as mesmas chamadas, trocando o texto selecionado pelo
             artigo inteiro. Mesmo com o modelo local gratuito, a premissa de preço (visível abaixo)
             responde "quanto isso custaria" num provedor pago.
@@ -658,7 +765,14 @@ def cells(integrantes: list[str]) -> list[nbformat.NotebookNode]:
                                     cost_table, naive_cost_from_records)
 
             premissa = PricePremise.from_settings(settings)
-            todos = [r for res in execucoes.values() for r in res.records]
+            # Tudo o que foi efetivamente enviado ao modelo: todas as execuções gravadas em data/runs
+            # (inclusive as da estratégia anterior), não só as usadas na auditoria final.
+            todos = []
+            for run_id in store.list_runs():
+                try:
+                    todos += store.load(run_id)
+                except (FileNotFoundError, ValueError) as exc:  # execução ainda sendo gravada
+                    print(f"custo: {run_id} ignorado ({type(exc).__name__})")
             custo_real = cost_of_records(todos, premissa, label="real (todas as execuções)")
             custo_ingenuo = naive_cost_from_records(todos, docs, count_tokens, premissa)
             comparacao_custo = compare_costs(custo_real, custo_ingenuo)
@@ -708,8 +822,32 @@ def cells(integrantes: list[str]) -> list[nbformat.NotebookNode]:
             from ficha.report.assemble import Narrative, build_report_content
             from ficha.report.pdf import ReportTooLongError
 
+            estrategia_textos = {}
+            if ESTRATEGIA == "semantic" and ANTES_DEPOIS:
+                estrategia_textos = dict(
+                    estrategia_escolhida=(
+                        "semantic — blocos por similaridade dentro do próprio artigo (first_pages "
+                        "como alternativa da 4.4c; hybrid testado como experimento e descartado)"
+                    ),
+                    estrategia_justificativa=(
+                        "Blocos de 1.200 caracteres (~300 tokens, um parágrafo típico) com "
+                        "sobreposição de 200 (uma frase inteira, para não cortar a evidência); 8 "
+                        "consultas em português, uma ou duas por campo, embedder multilíngue, blocos "
+                        "reordenados por página. Como limitacao veio null em quase todas as fichas, "
+                        "testamos o hybrid, que prioriza janelas de limitação: " + ANTES_DEPOIS
+                    ),
+                )
             narrativa = Narrative(  # edite aqui; conclusoes={"fidelidade": "..."} sobrescreve blocos
-                cobertura_limitacao=COBERTURA_LIMITACAO,
+                **estrategia_textos,
+                cobertura_limitacao=" ".join(
+                    t for t in (COBERTURA_LIMITACAO, ORCAMENTO_HYBRID, CIRCULARIDADE) if t
+                ),
+                antes_depois=(
+                    f"Experimento {EXPERIMENTO} × {ESTRATEGIA}: comparação a três na seção 1."
+                    if estrategia_textos else ANTES_DEPOIS
+                ),
+                # Casos em destaque no PDF: um pego pela fidelidade, outro só pelo vazamento.
+                destaques_preferidos=["08_Leka", "06_Barnes"] if MODO == "real" else [],
                 nota_limitacao=(
                     "Sem gabarito manual não dá para separar abstenção correta de omissão; a "
                     "heurística de vocabulário de limitação teve falsos positivos confirmados "
@@ -721,20 +859,30 @@ def cells(integrantes: list[str]) -> list[nbformat.NotebookNode]:
             MODELO_DECLARADO = client.model_name + (f" · {gpu['nome']}" if gpu else "")
             if MODO == "ensaio":
                 MODELO_DECLARADO += " (MODO ENSAIO: FakeLLM + PDFs sintéticos — não é resultado)"
-            conteudo = build_report_content(
-                integrantes=INTEGRANTES,
-                modelo=MODELO_DECLARADO,
-                summary=resumo,
-                cost=comparacao_custo,
-                cost_per_run=custo_por_execucao,
-                strategy_table=resumo_estrategias[["caracteres_medios", "tokens_medios", "tokens_corpus"]],
-                narrative=narrativa,
-                figuras=[fig_prompts_relatorio],
-                rule_distributions=DISTRIBUICOES,
-            )
+
+            def montar(custo_detalhado):
+                return build_report_content(
+                    integrantes=INTEGRANTES,
+                    modelo=MODELO_DECLARADO,
+                    summary=resumo,
+                    cost=comparacao_custo,
+                    cost_per_run=custo_por_execucao if custo_detalhado else None,
+                    strategy_table=resumo_estrategias[["caracteres_medios", "tokens_medios", "tokens_corpus"]],
+                    narrative=narrativa,
+                    figuras=[fig_prompts_relatorio],
+                    rule_distributions=DISTRIBUICOES,
+                    leak_runs=runs_vazamento,
+                )
+
             pdf_path = settings.outputs_dir / f"{BASENAME}.pdf"
             try:
-                build_report_pdf(conteudo, pdf_path)
+                try:
+                    build_report_pdf(montar(custo_detalhado=True), pdf_path)
+                except ReportTooLongError:
+                    # Limite de 3 páginas: a tabela de custo cai para os totais (o detalhe por
+                    # execução continua na seção 10 deste notebook).
+                    build_report_pdf(montar(custo_detalhado=False), pdf_path)
+                    print("Custo no PDF reduzido aos totais para caber em 3 páginas.")
                 print(f"PDF: {pdf_path} · {count_pages(pdf_path)} página(s)")
             except ReportTooLongError as exc:
                 print("ATENÇÃO — relatório longo demais, encurte a narrativa:", exc)

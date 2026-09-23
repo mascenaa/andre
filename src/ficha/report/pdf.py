@@ -114,6 +114,7 @@ class _Styles:
             spaceBefore=5,
             spaceAfter=2,
             textColor=colors.HexColor("#1F3A5F"),
+            keepWithNext=1,  # título nunca fica órfão no fim da página
         )
         self.body = ParagraphStyle("body", fontName=regular, fontSize=8, leading=10, spaceAfter=2)
         self.cell = ParagraphStyle("cell", fontName=regular, fontSize=7, leading=8.4)

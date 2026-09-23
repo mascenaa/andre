@@ -268,3 +268,86 @@ def test_limitation_outcome(rehearsal) -> None:  # type: ignore[no-untyped-def]
     assert row["n"] == len(primary)
     assert row["limitacao_preenchida"] + row["limitacao_null"] == row["n"]
     assert row["preenchida_com_trecho_fiel"] <= row["limitacao_preenchida"]
+
+
+def test_strategy_comparison_counts_sentinel_and_leak(rehearsal) -> None:  # type: ignore[no-untyped-def]
+    from dataclasses import replace
+
+    from ficha.extract import RunStore
+    from ficha.prompts import FEW_SHOT_EXAMPLES
+    from ficha.report.assemble import strategy_comparison
+
+    store = RunStore(rehearsal.table_csv.parent.parent / "runs")
+    recs = [r for r in store.load(rehearsal.run_ids["primary"]) if r.ficha is not None][:3]
+    a, b, c = recs
+    runs = {
+        "x": [
+            replace(a, ficha=a.ficha.model_copy(update={"limitacao": "Não informado."})),  # type: ignore[union-attr]
+            replace(
+                b,
+                ficha=b.ficha.model_copy(
+                    update={"limitacao": FEW_SHOT_EXAMPLES[0].output.limitacao}
+                ),
+            ),  # type: ignore[union-attr]
+            replace(
+                c, ficha=c.ficha.model_copy(update={"limitacao": "Only one hospital was used."})
+            ),  # type: ignore[union-attr]
+        ]
+    }
+    row = strategy_comparison(runs).iloc[0]
+    assert row["limitacao_preenchida"] == 3
+    assert row["limitacao_sentinela"] == 1
+    assert row["limitacao_vazada"] == 1
+    assert row["limitacao_legitima"] == 1
+    assert row["tokens_entrada"] == sum(r.usage.input_tokens for r in runs["x"])
+
+
+def test_strategy_verdict_negative_experiment() -> None:
+    from ficha.report.assemble import strategy_verdict
+
+    comp = pd.DataFrame(
+        [
+            {
+                "estrategia": "semantic (principal)",
+                "n": 19,
+                "pagina_correta": 16,
+                "limitacao_legitima": 1,
+                "limitacao_vazada": 0,
+                "limitacao_sentinela": 0,
+                "tokens_entrada": 1000,
+                "legitimas": "18_Karniadakis_2021",
+            },
+            {
+                "estrategia": "hybrid (experimento)",
+                "n": 19,
+                "pagina_correta": 14,
+                "limitacao_legitima": 0,
+                "limitacao_vazada": 2,
+                "limitacao_sentinela": 1,
+                "tokens_entrada": 1250,
+                "legitimas": "",
+            },
+        ]
+    )
+    recall = pd.DataFrame(
+        [
+            {
+                "estrategia": "semantic",
+                "artigos_cobertos": 6,
+                "artigos_com_frases": 15,
+                "recall_frases": 0.143,
+            },
+            {
+                "estrategia": "hybrid",
+                "artigos_cobertos": 9,
+                "artigos_com_frases": 15,
+                "recall_frases": 0.302,
+            },
+        ]
+    )
+    text = strategy_verdict(comp, "semantic (principal)", "hybrid (experimento)", recall)
+    assert "6 → 9 de 15" in text and "14% → 30%" in text
+    assert "E a saída não mudou" in text
+    assert "o gargalo de limitacao é o modelo" in text.lower()
+    assert "16/19 × 14/19" in text and "+25%" in text
+    assert text.endswith("a estratégia final é semantic.")

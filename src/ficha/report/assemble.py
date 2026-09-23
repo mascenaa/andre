@@ -102,11 +102,12 @@ class Narrative:
     )
     o_que_faria_diferente: list[str] = field(
         default_factory=lambda: [
-            "Anotar à mão um gabarito de limitacao em 5 artigos, para separar abstenção "
-            "correta de omissão (hoje indistinguíveis).",
-            "Exemplos few-shot em domínio propositalmente distante não bastaram: instruir "
-            'explicitamente "não copie os exemplos" no prompt e medir se o vazamento some.',
-            "Comparar o modelo local com um modelo por API nas mesmas 19 fichas.",
+            "Uma segunda passagem dedicada só a limitacao, sobre as janelas de pista de "
+            "limitação (a entrada já as traz; o modelo de 3B não as usa na ficha completa).",
+            "Modelo maior — Qwen2.5-7B em 4 bits ou um modelo por API — nas mesmas 19 fichas.",
+            'Instrução explícita "não copie os exemplos" e medir se o vazamento do few-shot '
+            "some; exemplos em domínio distante não bastaram.",
+            "Gabarito manual de limitacao em 5 artigos, para separar abstenção de omissão.",
         ]
     )
     cobertura_limitacao: str = ""
@@ -116,6 +117,8 @@ class Narrative:
     """Frase "antes × depois" da seleção (ver :func:`before_after_sentence`), anexada a 4.4c."""
     nota_limitacao: str = ""
     """Frase sobre ``limitacao`` null (gabarito, heurística), anexada à conclusão de 4.4c."""
+    destaques_preferidos: list[str] = field(default_factory=list)
+    """Prefixos de arquivo a destacar primeiro (ex.: ``["08_Leka", "06_Barnes"]``)."""
     destaque: str | None = None
     """Sobrescreve o parágrafo de destaque gerado por :func:`invention_highlight`."""
     declaracao_uso_ia: str = (
@@ -283,12 +286,22 @@ def _kind(c: InventionCase) -> int:
     return 1 if c.leaked_fields else 2
 
 
-def pick_highlights(cases: Sequence[InventionCase], k: int = 2) -> list[InventionCase]:
-    """Até ``k`` casos, um de cada tipo de detecção primeiro (o mais sutil antes)."""
+def pick_highlights(
+    cases: Sequence[InventionCase], k: int = 2, prefer: Sequence[str] = ()
+) -> list[InventionCase]:
+    """Até ``k`` casos em destaque.
+
+    Primeiro os preferidos (prefixo do arquivo, na ordem dada), depois um de cada tipo de
+    detecção, depois o resto.
+    """
     chosen: list[InventionCase] = []
+    for prefixo in prefer:
+        achado = next((c for c in cases if c.arquivo.startswith(prefixo)), None)
+        if achado is not None and achado not in chosen and len(chosen) < k:
+            chosen.append(achado)
     for kind in (1, 0, 2):
         found = next((c for c in cases if _kind(c) == kind), None)
-        if found is not None and len(chosen) < k:
+        if found is not None and found not in chosen and len(chosen) < k:
             chosen.append(found)
     for c in cases:
         if len(chosen) >= k:
@@ -298,14 +311,16 @@ def pick_highlights(cases: Sequence[InventionCase], k: int = 2) -> list[Inventio
     return chosen
 
 
-def invention_highlight(cases: Sequence[InventionCase], k: int = 2) -> str:
+def invention_highlight(
+    cases: Sequence[InventionCase], k: int = 2, prefer: Sequence[str] = ()
+) -> str:
     """Parágrafo de destaque (o que a rubrica pede): as invenções e por que foram detectadas.
 
     Mostra até ``k`` casos (um por tipo de detecção); os demais são contados, não descritos.
     """
     if not cases:
         return ""
-    shown = pick_highlights(cases, k)
+    shown = pick_highlights(cases, k, prefer)
     partes: list[str] = []
     for i, c in enumerate(shown, start=1):
         nome = f"({i}) {short_name(c.arquivo)}, execução {c.execucao}"
@@ -320,13 +335,11 @@ def invention_highlight(cases: Sequence[InventionCase], k: int = 2) -> str:
         elif c.leaked_fields:
             campo = (c.copied_fields or c.leaked_fields)[0]
             if campo in c.copied_fields:
-                como = "copiado do exemplo few-shot"
+                como = "foi copiado do exemplo few-shot"
             else:
-                como = (
-                    f"com «{c.terms.get(campo, '')}», termo do exemplo few-shot ausente do artigo"
-                )
+                como = f"contém «{c.terms.get(campo, '')}», termo do exemplo ausente do artigo"
             partes.append(
-                f"{nome}: {campo} «{_clip(c.values.get(campo, ''))}» {como}, com trecho de "
+                f"{nome}: o campo {campo} «{_clip(c.values.get(campo, ''))}» {como}, com trecho de "
                 "evidência correto — fidelidade e página passam. Só a comparação dos campos com "
                 "os exemplos do prompt detecta."
             )
@@ -597,8 +610,9 @@ def cost_section(
         razao_ingenuo_real=comparison.ratio,
         comentario=(
             f"Tokens de entrada: a alternativa ingênua envia {comparison.token_ratio:.1f}× mais. "
-            "Repetições de estabilidade, a outra estratégia, a outra temperatura e a outra "
-            "versão do prompt estão incluídas no total real."
+            "O total real inclui tudo o que foi enviado: repetição de estabilidade, outra "
+            "estratégia, outra temperatura, outra versão do prompt e os experimentos de seleção "
+            "(execuções hybrid)."
         ),
     )
 
@@ -756,6 +770,122 @@ def before_after_sentence(outcome: pd.DataFrame, before: str, after: str) -> str
     return texto
 
 
+SENTINELAS_LIMITACAO = frozenset(
+    {
+        "não informado",
+        "nao informado",
+        "não informada",
+        "nao informada",
+        "não declarado",
+        "nao declarado",
+        "não declarada",
+        "nao declarada",
+        "n/a",
+        "null",
+        "none",
+        "",
+    }
+)
+"""Textos que significam "ausente" escritos no lugar do ``null`` (não são limitação)."""
+
+
+def _is_sentinel(value: str) -> bool:
+    return value.strip().strip(".").lower() in SENTINELAS_LIMITACAO
+
+
+def strategy_comparison(
+    runs: Mapping[str, Sequence[ExtractionRecord]],
+    recall: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """As estratégias lado a lado, a partir das execuções gravadas (uma por estratégia).
+
+    ``limitacao_legitima`` = preenchida, que não é sentinela ("Não informado") nem cópia do
+    exemplo few-shot. É o que a troca de estratégia queria aumentar.
+    """
+    from ficha.audit import check_fewshot_leakage
+
+    recall_by = (
+        {str(r["estrategia"]): _num(r["recall_frases"]) for r in recall.to_dict("records")}
+        if recall is not None
+        else {}
+    )
+    rows = []
+    for nome, recs in runs.items():
+        fid = fidelity_summary(recs)
+        leaks = {r.arquivo: check_fewshot_leakage(r) for r in recs}
+        preenchidas = [r for r in recs if r.ficha is not None and r.ficha.limitacao is not None]
+        sentinela = [r for r in preenchidas if _is_sentinel(r.ficha.limitacao or "")]  # type: ignore[union-attr]
+        vazada = [r for r in preenchidas if "limitacao" in leaks[r.arquivo].leaked_fields]
+        legitima = [r for r in preenchidas if r not in sentinela and r not in vazada]
+        estrategia = recs[0].strategy if recs else nome
+        rows.append(
+            {
+                "estrategia": nome,
+                "fichas_ok": sum(r.ficha is not None for r in recs),
+                "n": len(recs),
+                "fidelidade": fid.n_found,
+                "pagina_correta": fid.n_page_ok,
+                "vazamento": sum(lr.any_leak for lr in leaks.values()),
+                "limitacao_preenchida": len(preenchidas),
+                "limitacao_legitima": len(legitima),
+                "limitacao_vazada": len(vazada),
+                "limitacao_sentinela": len(sentinela),
+                "tokens_entrada": sum(r.usage.input_tokens for r in recs),
+                "recall_limitacoes_no_contexto": recall_by.get(estrategia),
+                "legitimas": ", ".join(short_name(r.arquivo) for r in legitima),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def strategy_verdict(
+    comparison: pd.DataFrame,
+    chosen: str,
+    experiment: str,
+    recall: pd.DataFrame | None = None,
+    criterion: str = "pagina_correta",
+) -> str:
+    """Conclusão da 4.1/4.4c: o experimento de entrada mudou a saída? (a partir das tabelas)."""
+    rows = {str(r["estrategia"]): r for r in comparison.to_dict("records")}
+    if chosen not in rows or experiment not in rows:
+        return ""
+    a, b = rows[chosen], rows[experiment]
+    n = int(a["n"])
+    entrada = ""
+    if recall is not None:
+        rr = {str(r["estrategia"]): r for r in recall.to_dict("records")}
+        ka, kb = chosen.split(" ")[0], experiment.split(" ")[0]
+        if ka in rr and kb in rr:
+            entrada = (
+                f"Corrigimos a entrada — artigos com limitação declarada no contexto: "
+                f"{int(rr[ka]['artigos_cobertos'])} → {int(rr[kb]['artigos_cobertos'])} de "
+                f"{int(rr[ka]['artigos_com_frases'])}; recall das frases "
+                f"{pct(_num(rr[ka]['recall_frases']))} → {pct(_num(rr[kb]['recall_frases']))}. "
+            )
+    tokens = float(b["tokens_entrada"]) / float(a["tokens_entrada"]) - 1
+    sinal = "+" if tokens >= 0 else ""
+    saida = (
+        f"limitacao legítima {int(a['limitacao_legitima'])}/{n} ({a['legitimas'] or '—'}) × "
+        f"{int(b['limitacao_legitima'])}/{n} ({b['legitimas'] or '—'}); no {experiment}, "
+        f"{int(b['limitacao_vazada'])} preenchida(s) copiada(s) do exemplo e "
+        f"{int(b['limitacao_sentinela'])} sentinela"
+    )
+    if int(b["limitacao_legitima"]) <= int(a["limitacao_legitima"]):
+        efeito = (
+            f"e a saída não mudou: {saida}. O gargalo de limitacao é o modelo, não a seleção; o "
+            "próximo passo é um modelo maior (ou API) ou uma segunda passagem dedicada só a "
+            "limitação."
+        )
+    else:
+        efeito = f"e a saída melhorou: {saida}."
+    return (
+        f"{entrada}{efeito[0].upper()}{efeito[1:]} Pelo critério "
+        f"declarado da 4.4c ({criterion.replace('_', ' ')}: {int(a[criterion])}/{n} × "
+        f"{int(b[criterion])}/{n}; tokens de entrada {sinal}{pct(tokens)} no {experiment}), a "
+        f"estratégia final é {chosen.split(' ')[0]}."
+    )
+
+
 def build_report_content(
     *,
     integrantes: Sequence[str],
@@ -847,6 +977,8 @@ def build_report_content(
         destaque_auditoria=(
             nar.destaque
             if nar.destaque is not None
-            else invention_highlight(invention_cases(leak_runs or {}))
+            else invention_highlight(
+                invention_cases(leak_runs or {}), prefer=nar.destaques_preferidos
+            )
         ),
     )
