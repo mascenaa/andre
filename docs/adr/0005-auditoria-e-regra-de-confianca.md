@@ -140,3 +140,49 @@ razão de tokens de entrada (esta independe da premissa de preço).
   palavras) — o efeito máximo é rebaixar para MEDIA, e o motivo fica explícito.
 - O limiar 0.90 e os limites de campos são parâmetros; mudá-los muda o texto da regra, que é
   gerado a partir deles.
+
+## Calibração após execução real (2026-09-23)
+
+**Dados.** Pipeline real com Qwen2.5-3B-Instruct, 19 artigos, 5 execuções (`data/runs/`).
+Comparando as estratégias `semantic` × `first_pages` (19 pares), a similaridade média por
+campo foi: problema 0.49, dados 0.46, metodo 0.49, metrica 0.49, evidencia.trecho 0.48,
+evidencia.pagina 0.16, limitacao 0.95. Entre repetições (mesma entrada, decodificação gulosa):
+19/19 fichas idênticas (similaridade 1.00 em todos os campos).
+
+**Problema.** A regra v1 deu alta 0 / media 2 / baixa 17, quase sempre pelo motivo "6 campos
+mudaram entre estratégias". Duas entradas diferentes produzem, por construção, paráfrases
+diferentes e evidências de páginas diferentes — o critério media **redação**, não
+confiabilidade. Já a instabilidade com a *mesma* entrada é informativa, e ali a comparação
+exata continua valendo.
+
+**Decisão (regra v2, padrão).** `ConfidenceRule.input_effect_mode`:
+
+- `"strict"` (v1, preservada e reproduzível com `RULE_V1`): toda diferença conta, também
+  entre estratégias;
+- `"categorical"` (v2, `RULE_V2`, padrão): entre **estratégias** só conta a discordância
+  categórica em `limitacao` — `null` de um lado, texto do outro (`DiffReport.n_categorical_changes`).
+  Essa discordância é de conteúdo ("os autores declaram limitação?"), não de redação, e
+  rebaixa para MEDIA. Entre **repetições** a comparação continua exata.
+
+Os outros critérios não mudam: trecho não encontrado → BAIXA (pegou 08_Leka: o trecho era a
+frase do exemplo few-shot, score 0.47 — invenção detectada); página errada → BAIXA (11_Jarolim e
+D04_Jiao: trecho existe, página declarada errada).
+
+**Heurística de limitação.** O veredito `null_suspeito` (limitação null, mas a palavra
+"limitation" aparece no contexto) **não rebaixa** — e na implementação nunca rebaixou; agora
+isso está declarado. A leitura confirmou falsos positivos: um título "Prospects, Scope, and
+Limitations" e um parágrafo sobre "limitations of generative AI in academic writing" — a
+palavra aparece sem ser uma limitação declarada do próprio trabalho. `preenchida_sem_suporte`
+(limitação preenchida sem nenhum termo de limitação no contexto) continua limitando a MEDIA: é
+o erro grave do enunciado e não sofre desse falso positivo (a ausência total do vocabulário é
+um sinal forte).
+
+**Alternativa rejeitada.** Manter a comparação de texto livre entre estratégias, com um limiar
+de similaridade (ex.: "mudou" se `ratio < 0.4`). Qualquer valor seria arbitrário: paráfrases
+corretas em pt-BR do mesmo conteúdo ficam em ≈0.4–0.6 de `ratio`, a mesma faixa de conteúdos
+de fato diferentes, então o limiar não separa "reescreveu" de "discorda".
+
+**Comparabilidade.** `confidence_by_rule(primary, rep, alt, {"v1": RULE_V1, "v2": RULE_V2})`
+produz a confiança e os motivos por artigo sob as duas regras lado a lado;
+`confidence_distribution(fichas)` dá a distribuição de cada uma. O texto de cada regra
+(`describe()`) inclui o modo ativo e esta justificativa numérica.

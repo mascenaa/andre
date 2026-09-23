@@ -37,6 +37,9 @@ FIELDS: tuple[str, ...] = (
 )
 """Campos comparados, na ordem da Seção 3."""
 
+CATEGORICAL_FIELDS: tuple[str, ...] = ("limitacao",)
+"""Campos em que ``None`` versus valor é uma discordância categórica (declara / não declara)."""
+
 FieldValue = str | int | None
 
 
@@ -121,6 +124,24 @@ class DiffReport:
         if arquivo not in self.per_arquivo:
             return None
         return len(self.changed_fields(arquivo))
+
+    def categorical_changed_fields(self, arquivo: str) -> list[str]:
+        """Campos com discordância **categórica**: ``None`` de um lado, valor do outro.
+
+        Só ``limitacao`` pode ser ``None`` no esquema, então na prática é "um lado declara
+        limitação e o outro não". Paráfrase de texto livre e evidência diferente não contam.
+        """
+        return [
+            d.field
+            for d in self.per_arquivo.get(arquivo, [])
+            if d.field in CATEGORICAL_FIELDS and (d.a is None) != (d.b is None)
+        ]
+
+    def n_categorical_changes(self, arquivo: str) -> int | None:
+        """Nº de discordâncias categóricas; ``None`` se o artigo não foi pareado."""
+        if arquivo not in self.per_arquivo:
+            return None
+        return len(self.categorical_changed_fields(arquivo))
 
     @property
     def changed_fields_by_arquivo(self) -> dict[str, int]:

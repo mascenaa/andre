@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 from ficha.audit.diff import DiffReport, diff_runs, index_by_arquivo
 from ficha.audit.fidelity import (
@@ -22,6 +22,18 @@ from ficha.audit.fidelity import (
 )
 from ficha.schema import Confianca, Evidencia, Ficha
 from ficha.types import ExtractionRecord, ParseStatus
+
+InputEffectMode = Literal["strict", "categorical"]
+
+CALIBRACAO_ENTRADA = (
+    "Calibração após a execução real (Qwen2.5-3B, 19 artigos, 2026-09-23): entre as "
+    "estratégias semantic e first_pages a similaridade média dos campos de texto livre foi "
+    "≈0.49 (problema 0.49, dados 0.46, metodo 0.49, metrica 0.49, evidencia.trecho 0.48; "
+    "evidencia.pagina 0.16), enquanto entre repetições com a mesma entrada foi 1.00 (19/19 "
+    "fichas idênticas). Entradas diferentes produzem paráfrases e evidências de páginas "
+    "diferentes por construção: isso mede redação, não confiabilidade."
+)
+"""Justificativa numérica do modo ``categorical`` (citada em :meth:`ConfidenceRule.describe`)."""
 
 _ORDER = {Confianca.BAIXA: 0, Confianca.MEDIA: 1, Confianca.ALTA: 2}
 
@@ -46,7 +58,28 @@ class ConfidenceRule:
     require_page_ok: bool = True
     """Se ``True``, trecho encontrado em página diferente da declarada → BAIXA."""
     check_limitacao: bool = True
-    """Se ``True``, limitação preenchida sem vocabulário de limitação no contexto → máx. MEDIA."""
+    """Se ``True``, limitação preenchida sem vocabulário de limitação no contexto → máx. MEDIA.
+
+    Só o veredito ``preenchida_sem_suporte`` rebaixa. ``null_suspeito`` (null, mas o contexto
+    contém a palavra "limitation") **nunca** rebaixa: na execução real deu falsos positivos
+    confirmados por leitura (um título "Prospects, Scope, and Limitations"; um parágrafo sobre
+    "limitations of generative AI in academic writing") — a palavra aparece sem ser limitação
+    declarada do próprio trabalho.
+    """
+    input_effect_mode: InputEffectMode = "categorical"
+    """Como contar "campos que mudaram" entre ESTRATÉGIAS de entrada (4.4c).
+
+    - ``"strict"`` (regra v1): igualdade exata após normalização em todos os campos.
+    - ``"categorical"`` (regra v2, padrão): só conta a discordância categórica em
+      ``limitacao`` (null de um lado, texto do outro). Ver :data:`CALIBRACAO_ENTRADA`.
+
+    Entre REPETIÇÕES (mesma entrada) a igualdade é sempre exata, nos dois modos.
+    """
+
+    @property
+    def version(self) -> str:
+        """``"v1"`` (strict) ou ``"v2"`` (categorical), para rotular tabelas lado a lado."""
+        return "v1" if self.input_effect_mode == "strict" else "v2"
 
     def describe(self) -> str:
         """Texto da regra, em português, para o relatório."""
@@ -63,9 +96,28 @@ class ConfidenceRule:
             if self.check_limitacao
             else ""
         )
+        if self.input_effect_mode == "strict":
+            modo = (
+                "Modo de comparação entre estratégias: strict (v1) — todo campo diferente após "
+                "normalização conta como mudança, também entre estratégias de entrada."
+            )
+        else:
+            modo = (
+                "Modo de comparação entre estratégias: categorical (v2) — entre estratégias só "
+                "conta como mudança a discordância categórica em limitacao (null de um lado, "
+                "texto do outro); paráfrase de texto livre e evidência de outra página não "
+                "contam. Entre repetições (mesma entrada) a comparação continua exata. "
+                f"{CALIBRACAO_ENTRADA}"
+            )
+        null_note = (
+            "\n- limitacao null com a palavra 'limitation' no contexto NÃO rebaixa: a heurística "
+            "teve falsos positivos (títulos e uso genérico da palavra)."
+            if self.check_limitacao
+            else ""
+        )
         return (
-            "Regra de confiança (aplicada automaticamente; o nível final é o MENOR entre os "
-            "limites abaixo):\n"
+            f"Regra de confiança {self.version} (aplicada automaticamente; o nível final é o "
+            "MENOR entre os limites abaixo):\n"
             "- BAIXA se a extração falhou (nenhum JSON válido segundo o esquema), "
             "ou o trecho de evidência não foi encontrado no texto enviado ao modelo "
             f"(similaridade partial_ratio normalizada < {self.fidelity_threshold:.2f}), "
@@ -80,7 +132,7 @@ class ConfidenceRule:
             "campo(s) mudou(aram) tanto entre repetições quanto entre estratégias.\n"
             "Campos comparados: problema, dados, metodo, metrica, limitacao, evidencia.trecho, "
             "evidencia.pagina; textos iguais após normalização tipográfica (NFKC, minúsculas, "
-            "espaços, aspas e hífens)."
+            f"espaços, aspas e hífens).{null_note}\n{modo}"
         )
 
     def assign(
@@ -94,8 +146,10 @@ class ConfidenceRule:
         """Nível de confiança e os motivos que o limitaram.
 
         ``None`` numa comparação significa "não verificado" e limita a MEDIA.
-        ``limitacao_supported=False`` (ver :func:`check_limitacao_support`) limita a MEDIA
-        quando ``check_limitacao`` está ligado; ``None`` não tem efeito.
+        ``n_changed_fields_input`` deve vir contado conforme ``input_effect_mode`` (é o que
+        :func:`build_final_fichas` faz). ``limitacao_supported=False`` (veredito
+        ``preenchida_sem_suporte``) limita a MEDIA quando ``check_limitacao`` está ligado;
+        ``True``/``None`` não têm efeito — ``null_suspeito`` conta como ``True``.
         Para ALTA, a lista traz uma única frase com o que foi confirmado.
         """
         level = Confianca.ALTA
@@ -131,6 +185,15 @@ class ConfidenceRule:
             ("repetições", n_changed_fields_stability),
             ("estratégias de entrada", n_changed_fields_input),
         ):
+            categorical = nome != "repetições" and self.input_effect_mode == "categorical"
+            if categorical and n is not None and n > self.max_changed_fields_for_alta:
+                lvl = Confianca.BAIXA if n > self.max_changed_fields_for_media else Confianca.MEDIA
+                cap(
+                    lvl,
+                    "discordância categórica entre estratégias de entrada: limitacao é null "
+                    "numa e preenchida na outra",
+                )
+                continue
             if n is None:
                 cap(Confianca.MEDIA, f"comparação entre {nome} não verificada")
             elif n > self.max_changed_fields_for_media:
@@ -168,7 +231,7 @@ class FichaAuditada:
     diffs_stability: list[str] = field(default_factory=list)
     """Campos que mudaram entre repetições."""
     diffs_input: list[str] = field(default_factory=list)
-    """Campos que mudaram entre estratégias."""
+    """Campos que mudaram entre estratégias (no modo ``categorical``, só os categóricos)."""
 
     @property
     def arquivo(self) -> str:
@@ -221,9 +284,13 @@ def failed_ficha(arquivo: str) -> Ficha:
     )
 
 
-def _changes(report: DiffReport | None, arquivo: str) -> tuple[int | None, list[str]]:
+def _changes(
+    report: DiffReport | None, arquivo: str, categorical: bool = False
+) -> tuple[int | None, list[str]]:
     if report is None:
         return None, []
+    if categorical:
+        return report.n_categorical_changes(arquivo), report.categorical_changed_fields(arquivo)
     return report.n_changed(arquivo), report.changed_fields(arquivo)
 
 
@@ -239,6 +306,9 @@ def build_final_fichas(
     - ``stability_rep``: a repetição da MESMA configuração (4.4b), ou ``None``.
     - ``alt_input``: a mesma extração com a outra estratégia de entrada (4.4c), ou ``None``.
 
+    ``n_changed_input`` é contado conforme ``rule.input_effect_mode`` (exato em ``strict``,
+    só discordâncias categóricas de ``limitacao`` em ``categorical``).
+
     Registros com extração falha viram fichas ``EXTRAÇÃO FALHOU`` com ``BAIXA``, para que a
     tabela tenha sempre uma linha por artigo.
     """
@@ -251,7 +321,7 @@ def build_final_fichas(
     for rec in primary:
         fid = check_fidelity(rec, rule.fidelity_threshold)
         n_stab, f_stab = _changes(stab, rec.arquivo)
-        n_inp, f_inp = _changes(inp, rec.arquivo)
+        n_inp, f_inp = _changes(inp, rec.arquivo, rule.input_effect_mode == "categorical")
         lim = check_limitacao_support(rec)
         # Sem ficha é falha, qualquer que seja o status gravado.
         status = ParseStatus.FAILED if rec.ficha is None else rec.parse_status
@@ -275,3 +345,9 @@ def build_final_fichas(
             )
         )
     return out
+
+
+RULE_V1 = ConfidenceRule(input_effect_mode="strict")
+"""Regra v1 (antes da calibração): comparação exata também entre estratégias."""
+RULE_V2 = ConfidenceRule(input_effect_mode="categorical")
+"""Regra v2 (padrão): entre estratégias só conta a discordância categórica em limitacao."""

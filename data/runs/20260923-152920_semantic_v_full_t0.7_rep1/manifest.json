@@ -1,0 +1,91 @@
+{
+  "run_id": "20260923-152920_semantic_v_full_t0.7_rep1",
+  "ficha_version": "0.1.0",
+  "modelo": "Qwen/Qwen2.5-3B-Instruct",
+  "cliente": "QwenLocalClient",
+  "prompt": {
+    "variante": "v_full",
+    "features": {
+      "role": true,
+      "delimiters": true,
+      "few_shot": true,
+      "abstention": true,
+      "chain_of_thought": false
+    },
+    "descricao": "on=['role', 'delimiters', 'few_shot', 'abstention'] off=['chain_of_thought']",
+    "template_sha": "e4ea67f171ac",
+    "blocos": [
+      "### PAPEL",
+      "### INSTRUÇÃO",
+      "### FORMATO DE SAÍDA",
+      "### REGRA DE ABSTENÇÃO",
+      "### EXEMPLOS",
+      "### ARTIGO"
+    ]
+  },
+  "estrategia": {
+    "nome": "semantic",
+    "params": {
+      "embedder": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+      "top_k": 6,
+      "chunk_size": 1200,
+      "overlap": 200,
+      "max_chars": 8000,
+      "merge_overlaps": true,
+      "queries": [
+        "qual problema este trabalho tenta resolver e qual é o objetivo do estudo",
+        "que dados foram usados: fonte, período e volume do conjunto de dados",
+        "qual é o método ou a abordagem principal proposta pelos autores",
+        "como o desempenho foi medido",
+        "métricas de avaliação e resultados numéricos obtidos",
+        "o que este trabalho não consegue fazer",
+        "limitações declaradas pelos autores e ameaças à validade do estudo",
+        "principais resultados e contribuições do artigo"
+      ],
+      "n_chunks_total": 75,
+      "n_chunks_selected": 10
+    }
+  },
+  "geracao": {
+    "temperature": 0.7,
+    "max_new_tokens": 1024,
+    "seed": 42,
+    "top_p": 1.0
+  },
+  "temperatura": 0.7,
+  "seed": 42,
+  "repeticao": 1,
+  "n_docs": 6,
+  "arquivos": [
+    "03_Camporeale_Berger_2025_Verification_NOAA_SWPC_Flare_Forecast.pdf",
+    "04_Lugaz_2021_ML_Research_Space_Weather_Journal.pdf",
+    "05_Lugaz_Morley_2025_Space_Weather_New_Directions.pdf",
+    "06_Barnes_2016_Comparison_Flare_Forecasting_I_AllClear.pdf",
+    "07_Leka_2019_Comparison_Flare_Forecasting_II_Benchmarks.pdf",
+    "08_Leka_2019_Comparison_Flare_Forecasting_III_Systematic_Behaviors.pdf"
+  ],
+  "iniciado_em": "2026-09-23T18:29:20.092086+00:00",
+  "concluido_em": "2026-09-23T18:32:12.937274+00:00",
+  "status_execucao": "concluida",
+  "modelo_reportado": [
+    "Qwen/Qwen2.5-3B-Instruct"
+  ],
+  "resumo": {
+    "n_registros": 6,
+    "status": {
+      "ok": 6,
+      "repaired": 0,
+      "failed": 0
+    },
+    "json_valido_de_primeira": 6,
+    "taxa_json_valido_de_primeira": 1.0,
+    "limitacao_null": 6,
+    "reparos": {},
+    "usage": {
+      "input_tokens": 21620,
+      "output_tokens": 1502,
+      "total_tokens": 23122
+    },
+    "latencia_total_s": 171.258
+  }
+}

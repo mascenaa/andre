@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 from conftest import make_document
-from ficha.audit.confidence import FALHOU, ConfidenceRule, build_final_fichas
+from ficha.audit.confidence import FALHOU, RULE_V1, RULE_V2, ConfidenceRule, build_final_fichas
 from ficha.audit.fidelity import FidelityResult, check_fidelity
 from ficha.llm.fake import FakeBehavior
 from ficha.schema import Confianca
 from ficha.types import ParseStatus
 from test_audit_helpers import CONTEXT, TRECHO_OK, ficha_dict, make_record, record_from_fake
 
-RULE = ConfidenceRule()
+RULE = ConfidenceRule(input_effect_mode="strict")  # v1: testes originais inalterados
 
 
 def fid(found: bool = True, score: float = 1.0, page_ok: bool = True) -> FidelityResult:
@@ -134,7 +134,7 @@ def test_build_final_fichas() -> None:
 
 
 def test_build_sem_comparacoes_no_maximo_media() -> None:
-    fichas = build_final_fichas([make_record("a.pdf")], None, None)
+    fichas = build_final_fichas([make_record("a.pdf")], None, None, RULE)
     assert fichas[0].confianca == Confianca.MEDIA
     assert fichas[0].n_changed_input is None
 
@@ -146,5 +146,102 @@ def test_fidelidade_usa_threshold_da_regra() -> None:
     assert 0.9 <= score < 1.0
     f_strict = build_final_fichas([rec], [rec], [rec], ConfidenceRule(fidelity_threshold=0.99))
     assert f_strict[0].confianca == Confianca.BAIXA
-    f_def = build_final_fichas([rec], [rec], [rec])
+    f_def = build_final_fichas([rec], [rec], [rec], RULE)
     assert f_def[0].confianca == Confianca.ALTA
+
+
+# --------------------------------------------------------------------------- regra v2
+
+
+def _paraphrase_alt(arquivo: str, **kw: object) -> object:
+    """Mesma ficha reescrita pela outra estratégia: texto livre e evidência diferentes."""
+    return make_record(
+        arquivo,
+        ficha_dict(
+            problema="Estimar o risco de retorno ao hospital após a alta.",
+            dados="Registros eletrônicos de um hospital terciário em Boston.",
+            metodo="Árvores de gradiente sobre variáveis e texto clínico.",
+            metrica="Área sob a curva ROC.",
+            evidencia={"trecho": TRECHO_OK, "pagina": 1},
+            **kw,
+        ),
+        strategy="semantic",
+        run_id="alt",
+    )
+
+
+def test_padrao_e_v2_categorical_e_versoes() -> None:
+    assert ConfidenceRule().input_effect_mode == "categorical"
+    assert ConfidenceRule() == RULE_V2 and RULE_V1.input_effect_mode == "strict"
+    assert (RULE_V1.version, RULE_V2.version) == ("v1", "v2")
+    d2 = RULE_V2.describe()
+    assert "v2" in d2 and "categorical" in d2 and "0.49" in d2 and "1.00" in d2
+    assert "NÃO rebaixa" in d2
+    assert "strict" in RULE_V1.describe()
+
+
+def test_categorical_parafrase_entre_estrategias_nao_conta() -> None:
+    from ficha.audit.diff import diff_runs
+
+    primary = [make_record("a.pdf")]
+    alt = [_paraphrase_alt("a.pdf")]
+    d = diff_runs(primary, alt)
+    assert d.n_changed("a.pdf") == 4
+    sims = [x.similarity for x in d.per_arquivo["a.pdf"] if not x.equal]
+    assert max(sims) < 0.6  # paráfrase: similaridade baixa
+    assert d.n_categorical_changes("a.pdf") == 0
+
+    v2 = build_final_fichas(primary, primary, alt, RULE_V2)[0]
+    assert v2.confianca == Confianca.ALTA and v2.n_changed_input == 0 and v2.diffs_input == []
+    v1 = build_final_fichas(primary, primary, alt, RULE_V1)[0]
+    assert v1.confianca == Confianca.BAIXA and v1.n_changed_input == 4
+
+
+def test_categorical_none_vs_str_conta_um() -> None:
+    primary = [make_record("a.pdf")]  # limitacao preenchida
+    alt = [_paraphrase_alt("a.pdf", limitacao=None)]
+    f = build_final_fichas(primary, primary, alt, RULE_V2)[0]
+    assert f.n_changed_input == 1 and f.diffs_input == ["limitacao"]
+    assert f.confianca == Confianca.MEDIA
+    assert f.motivos == [
+        "discordância categórica entre estratégias de entrada: limitacao é null numa e "
+        "preenchida na outra"
+    ]
+    # str vs str diferente não é categórico
+    alt2 = [_paraphrase_alt("a.pdf", limitacao="Outra limitação qualquer.")]
+    assert build_final_fichas(primary, primary, alt2, RULE_V2)[0].n_changed_input == 0
+
+
+def test_categorical_repeticoes_continuam_exatas() -> None:
+    primary = [make_record("a.pdf")]
+    rep = [make_record("a.pdf", ficha_dict(metodo="Outro método."), run_id="rep2")]
+    f = build_final_fichas(primary, rep, primary, RULE_V2)[0]
+    assert f.n_changed_stability == 1 and f.confianca == Confianca.MEDIA
+
+
+def test_categorical_pagina_errada_e_trecho_inventado_continuam_baixa() -> None:
+    errada = make_record("a.pdf", ficha_dict(evidencia={"pagina": 3}))
+    inventado = record_from_fake(make_document("b.pdf"), FakeBehavior(invent_trecho_rate=1.0))
+    primary = [errada, inventado]
+    alt = [_paraphrase_alt("a.pdf"), _paraphrase_alt("b.pdf")]
+    by = {f.arquivo: f for f in build_final_fichas(primary, primary, alt, RULE_V2)}
+    assert by["a.pdf"].confianca == Confianca.BAIXA
+    assert any("página errada" in m for m in by["a.pdf"].motivos)
+    assert by["b.pdf"].confianca == Confianca.BAIXA
+    assert any("trecho não encontrado" in m for m in by["b.pdf"].motivos)
+
+
+def test_null_suspeito_nao_rebaixa() -> None:
+    # CONTEXT contém "Limitations" (vocabulário) e a ficha tem limitacao null → null_suspeito.
+    rec = make_record("a.pdf", ficha_dict(limitacao=None))
+    f = build_final_fichas([rec], [rec], [rec], RULE_V2)[0]
+    assert f.limitacao is not None and f.limitacao.verdict == "null_suspeito"
+    assert f.confianca == Confianca.ALTA
+
+
+def test_preenchida_sem_suporte_continua_media_em_v2() -> None:
+    ctx = "[p. 1]\n" + TRECHO_OK
+    rec = make_record("a.pdf", context_text=ctx)
+    f = build_final_fichas([rec], [rec], [rec], RULE_V2)[0]
+    assert f.limitacao is not None and f.limitacao.verdict == "preenchida_sem_suporte"
+    assert f.confianca == Confianca.MEDIA

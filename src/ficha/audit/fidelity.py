@@ -273,7 +273,9 @@ class LimitacaoCheck:
     - ``preenchida_sem_suporte``: o modelo preencheu ``limitacao``, mas o contexto não contém
       NENHUM termo de :data:`LIMITACAO_VOCAB_RE` → forte suspeita de limitação inventada.
     - ``null_suspeito``: ``limitacao`` é null, mas o contexto tem vocabulário de limitação →
-      possível omissão (erro menos grave que inventar).
+      possível omissão. **Só informativo**: não entra na regra de confiança, porque na
+      execução real deu falsos positivos (título "Prospects, Scope, and Limitations"; uso
+      genérico como "limitations of generative AI").
     - ``null_ok`` / ``preenchida_com_suporte``: coerente com o vocabulário do contexto.
 
     É um indício, não prova: vocabulário presente não garante que a limitação devolvida seja a

@@ -33,6 +33,26 @@ def confidence_distribution(fichas: Sequence[FichaAuditada]) -> dict[str, int]:
     return {c.value: sum(f.confianca == c for f in fichas) for c in Confianca}
 
 
+def confidence_by_rule(
+    primary: Sequence[ExtractionRecord],
+    stability_rep: Sequence[ExtractionRecord] | None,
+    alt_input: Sequence[ExtractionRecord] | None,
+    rules: Mapping[str, ConfidenceRule],
+) -> pd.DataFrame:
+    """Confiança por artigo sob várias regras, lado a lado (ex.: ``{"v1": RULE_V1, "v2": ...}``).
+
+    Colunas: ``arquivo``, e para cada regra ``confianca_<nome>`` e ``motivos_<nome>``.
+    A distribuição de cada regra sai de ``df[f"confianca_{nome}"].value_counts()`` ou de
+    :func:`confidence_distribution` aplicada às fichas.
+    """
+    df = pd.DataFrame({"arquivo": [r.arquivo for r in primary]})
+    for name, rule in rules.items():
+        fichas = build_final_fichas(primary, stability_rep, alt_input, rule)
+        df[f"confianca_{name}"] = [f.confianca.value for f in fichas]
+        df[f"motivos_{name}"] = ["; ".join(f.motivos) for f in fichas]
+    return df
+
+
 @dataclass(frozen=True, slots=True)
 class AuditSummary:
     """Tudo o que a Seção 4.4 (e a medição da 4.2) produziu, num só lugar.
@@ -59,6 +79,8 @@ class AuditSummary:
         """Números de manchete (serializáveis em JSON)."""
         return {
             "regra_confianca": self.rule.describe(),
+            "regra_versao": self.rule.version,
+            "regra_input_effect_mode": self.rule.input_effect_mode,
             "fidelidade": self.fidelity.to_dict(),
             "estabilidade": self.stability.to_dict() if self.stability else None,
             "efeito_entrada": self.input_effect.to_dict() if self.input_effect else None,

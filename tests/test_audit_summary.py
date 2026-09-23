@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from ficha.audit import (
     AuditSummary,
+    build_audit_summary,
     build_final_fichas,
     compare_prompt_variants,
     fichas_nao_defensaveis,
@@ -83,8 +84,6 @@ def test_tabelas_opcionais_ausentes() -> None:
 
 
 def test_build_audit_summary_equivale_ao_manual() -> None:
-    from ficha.audit import build_audit_summary
-
     primary = [make_record(n) for n in NAMES]
     rep2 = [make_record(n, run_id="rep2") for n in NAMES]
     s = build_audit_summary(
@@ -98,3 +97,34 @@ def test_build_audit_summary_equivale_ao_manual() -> None:
     assert s.stability is not None and s.stability.rate_identical == 1.0
     assert s.temperature is not None and s.temperature.escolha_t0_se_sustenta
     assert s.prompt_comparison is not None
+
+
+def test_confidence_by_rule_v1_v2_lado_a_lado() -> None:
+    from ficha.audit import RULE_V1, RULE_V2, build_final_fichas, confidence_by_rule
+    from ficha.audit import confidence_distribution as dist
+
+    primary = [make_record(n) for n in NAMES]
+    alt = [
+        make_record(
+            n, ficha_dict(metodo="Paráfrase do método pela outra estratégia."), strategy="s"
+        )
+        for n in NAMES
+    ]
+    df = confidence_by_rule(primary, primary, alt, {"v1": RULE_V1, "v2": RULE_V2})
+    assert list(df.columns) == [
+        "arquivo",
+        "confianca_v1",
+        "motivos_v1",
+        "confianca_v2",
+        "motivos_v2",
+    ]
+    assert list(df["confianca_v1"]) == ["media"] * 3
+    assert list(df["confianca_v2"]) == ["alta"] * 3
+    assert dist(build_final_fichas(primary, primary, alt, RULE_V2)) == {
+        "alta": 3,
+        "media": 0,
+        "baixa": 0,
+    }
+    s = build_audit_summary(primary, stability_rep=primary, alt_input=alt, rule=RULE_V1)
+    assert s.confidence_distribution == {"alta": 0, "media": 3, "baixa": 0}
+    assert s.to_dict()["regra_versao"] == "v1"

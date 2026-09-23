@@ -11,7 +11,13 @@
 - :mod:`~ficha.audit.summary`        — tudo junto, em tabelas.
 """
 
-from ficha.audit.confidence import ConfidenceRule, FichaAuditada, build_final_fichas
+from ficha.audit.confidence import (
+    RULE_V1,
+    RULE_V2,
+    ConfidenceRule,
+    FichaAuditada,
+    build_final_fichas,
+)
 from ficha.audit.diff import FIELDS, DiffReport, FieldDiff, diff_runs
 from ficha.audit.fidelity import (
     FidelityResult,
@@ -29,6 +35,7 @@ from ficha.audit.stability import StabilityReport, stability_report
 from ficha.audit.summary import (
     AuditSummary,
     build_audit_summary,
+    confidence_by_rule,
     confidence_distribution,
     fichas_nao_defensaveis,
 )
@@ -36,6 +43,8 @@ from ficha.audit.temperature import TemperatureReport, temperature_report
 
 __all__ = [
     "FIELDS",
+    "RULE_V1",
+    "RULE_V2",
     "AuditSummary",
     "ConfidenceRule",
     "DiffReport",
@@ -55,6 +64,7 @@ __all__ = [
     "check_fidelity",
     "check_limitacao_support",
     "compare_prompt_variants",
+    "confidence_by_rule",
     "confidence_distribution",
     "diff_runs",
     "fichas_nao_defensaveis",

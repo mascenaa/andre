@@ -244,6 +244,8 @@ class _Builder:
         ]
         if c.estrategia_tabela is not None:
             out.append(self.table(c.estrategia_tabela))
+        if c.estrategia_evidencia:
+            out += [Spacer(1, 2), self.lead("Evidência medida:", c.estrategia_evidencia)]
         return out
 
     def prompt(self) -> list[Flowable]:
@@ -279,8 +281,10 @@ class _Builder:
     def auditoria(self) -> list[Flowable]:
         c = self.c
         out: list[Flowable] = [self.section(3)]
-        for block in c.resultados_auditoria.blocks():
+        for i, block in enumerate(c.resultados_auditoria.blocks()):
             out += [self._audit_block(block), Spacer(1, 2)]
+            if i == 0 and c.destaque_auditoria:  # logo após a fidelidade, onde foi detectado
+                out += [Paragraph(f"<b>{self.text(c.destaque_auditoria)}</b>", self.s.body)]
         out.append(self.lead("Regra de confiança (declarada):", c.regra_confianca))
         if self.with_figures and c.figuras:
             out.append(self.figures(c.figuras))

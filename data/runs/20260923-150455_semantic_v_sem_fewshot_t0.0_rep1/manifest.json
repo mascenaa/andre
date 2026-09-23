@@ -1,0 +1,103 @@
+{
+  "run_id": "20260923-150455_semantic_v_sem_fewshot_t0.0_rep1",
+  "ficha_version": "0.1.0",
+  "modelo": "Qwen/Qwen2.5-3B-Instruct",
+  "cliente": "QwenLocalClient",
+  "prompt": {
+    "variante": "v_sem_fewshot",
+    "features": {
+      "role": true,
+      "delimiters": true,
+      "few_shot": false,
+      "abstention": true,
+      "chain_of_thought": false
+    },
+    "descricao": "on=['role', 'delimiters', 'abstention'] off=['few_shot', 'chain_of_thought']",
+    "template_sha": "f9c579f90029",
+    "blocos": [
+      "### PAPEL",
+      "### INSTRUÇÃO",
+      "### FORMATO DE SAÍDA",
+      "### REGRA DE ABSTENÇÃO",
+      "### ARTIGO"
+    ]
+  },
+  "estrategia": {
+    "nome": "semantic",
+    "params": {
+      "embedder": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+      "top_k": 6,
+      "chunk_size": 1200,
+      "overlap": 200,
+      "max_chars": 8000,
+      "merge_overlaps": true,
+      "queries": [
+        "qual problema este trabalho tenta resolver e qual é o objetivo do estudo",
+        "que dados foram usados: fonte, período e volume do conjunto de dados",
+        "qual é o método ou a abordagem principal proposta pelos autores",
+        "como o desempenho foi medido",
+        "métricas de avaliação e resultados numéricos obtidos",
+        "o que este trabalho não consegue fazer",
+        "limitações declaradas pelos autores e ameaças à validade do estudo",
+        "principais resultados e contribuições do artigo"
+      ],
+      "n_chunks_total": 95,
+      "n_chunks_selected": 8
+    }
+  },
+  "geracao": {
+    "temperature": 0.0,
+    "max_new_tokens": 1024,
+    "seed": 42,
+    "top_p": 1.0
+  },
+  "temperatura": 0.0,
+  "seed": 42,
+  "repeticao": 1,
+  "n_docs": 19,
+  "arquivos": [
+    "03_Camporeale_Berger_2025_Verification_NOAA_SWPC_Flare_Forecast.pdf",
+    "04_Lugaz_2021_ML_Research_Space_Weather_Journal.pdf",
+    "05_Lugaz_Morley_2025_Space_Weather_New_Directions.pdf",
+    "06_Barnes_2016_Comparison_Flare_Forecasting_I_AllClear.pdf",
+    "07_Leka_2019_Comparison_Flare_Forecasting_II_Benchmarks.pdf",
+    "08_Leka_2019_Comparison_Flare_Forecasting_III_Systematic_Behaviors.pdf",
+    "09_AsensioRamos_2023_ML_in_Solar_Physics.pdf",
+    "11_Jarolim_2023_Coronal_Field_PINN.pdf",
+    "13_Camporeale_2020_GrayBox_Regional_Ground_Magnetic_Perturbations.pdf",
+    "14_Licata_Mehta_2022_UQ_DataDriven_Space_Weather.pdf",
+    "15_Guastavino_2022_Implementation_Paradigm_Flare_Forecasting.pdf",
+    "16_Nishizuka_2020_Deep_Flare_Net_Reliable.pdf",
+    "17a_Roy_2025_Surya_Foundation_Model_Heliophysics.pdf",
+    "17b_Roy_2025_SuryaBench.pdf",
+    "18_Karniadakis_2021_Physics_Informed_ML.pdf",
+    "D01_Li_2020_Predicting_Flares_Deep_CNN.pdf",
+    "D02_Wang_2020_Predicting_Flares_ML_Solar_Cycle_Dependence.pdf",
+    "D03_Sun_2022_Predicting_Flares_CNN_LSTM_Two_Solar_Cycles.pdf",
+    "D04_Jiao_2020_Flare_Intensity_Prediction_ML.pdf"
+  ],
+  "iniciado_em": "2026-09-23T18:04:55.498846+00:00",
+  "concluido_em": "2026-09-23T18:17:36.258683+00:00",
+  "status_execucao": "concluida",
+  "modelo_reportado": [
+    "Qwen/Qwen2.5-3B-Instruct"
+  ],
+  "resumo": {
+    "n_registros": 19,
+    "status": {
+      "ok": 19,
+      "repaired": 0,
+      "failed": 0
+    },
+    "json_valido_de_primeira": 19,
+    "taxa_json_valido_de_primeira": 1.0,
+    "limitacao_null": 19,
+    "reparos": {},
+    "usage": {
+      "input_tokens": 57198,
+      "output_tokens": 5382,
+      "total_tokens": 62580
+    },
+    "latencia_total_s": 753.114
+  }
+}

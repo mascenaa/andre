@@ -158,6 +158,12 @@ class ReportContent:
     declaracao_uso_ia: str
     estrategia_tabela: TableLike | None = None
     """Opcional: comparação das estratégias de seleção (páginas, chars, tokens)."""
+    estrategia_evidencia: str = ""
+    """Opcional: evidência medida sobre a estratégia (ex.: quantas frases de limitação chegam
+    ao contexto de cada estratégia). Aparece na seção 1."""
+    destaque_auditoria: str = ""
+    """Opcional: o caso que a rubrica pede em destaque — uma invenção convincente, como foi
+    detectada e por que a detecção funcionou. Parágrafo próprio, em negrito, na seção 4."""
     subtitulo: str = "Computação Cognitiva · ESPM · 2026.2 · Atividade de Construção I"
     figuras: list[Path] = field(default_factory=list)
     """Figuras opcionais; só entram no PDF se couberem nas 3 páginas."""

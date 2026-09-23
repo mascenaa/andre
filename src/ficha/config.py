@@ -52,6 +52,14 @@ class Settings(BaseSettings):
     chunk_size_chars: int = 1200
     chunk_overlap_chars: int = 200
     semantic_top_k: int = 6
+    hybrid_max_chars: int | None = Field(
+        default=12000,
+        description=(
+            "Orçamento da estratégia híbrida (semântica + seções finais por palavra-chave). "
+            "Maior que o semântico porque a auditoria real mostrou que as limitações declaradas "
+            "ficam nas páginas finais e não chegavam ao modelo (ver ADR 0002, revisão)."
+        ),
+    )
     semantic_max_chars: int | None = Field(
         default=8000,
         description=(
