@@ -56,7 +56,7 @@ def cells(integrantes: list[str]) -> list[nbformat.NotebookNode]:
 
             **Declaração de uso de IA (Seção 7).** Usamos assistentes de IA para escrever partes do
             código do pacote `ficha` e revisar textos. Todas as decisões de projeto, os números e
-            as conclusões foram verificados pelo grupo, que sabe explicar cada linha entregue.
+            as conclusões foram verificados pelo grupo.
 
             **Como ler este notebook.** Toda a lógica (limpeza, seleção, prompt, parse, auditoria,
             custo, relatório) vive no pacote testado `src/ficha`; aqui só orquestramos e

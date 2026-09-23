@@ -105,18 +105,20 @@ class _Styles:
         self.subtitle = ParagraphStyle(
             "subtitle", fontName=regular, fontSize=8, leading=10, textColor=colors.grey
         )
-        self.members = ParagraphStyle("members", fontName=regular, fontSize=9, leading=12)
+        self.members = ParagraphStyle(
+            "members", fontName=regular, fontSize=9, leading=12, spaceBefore=4
+        )
         self.h2 = ParagraphStyle(
             "h2",
             fontName=bold,
             fontSize=9.5,
             leading=12,
-            spaceBefore=5,
-            spaceAfter=2,
+            spaceBefore=11,
+            spaceAfter=4,
             textColor=colors.HexColor("#1F3A5F"),
             keepWithNext=1,  # título nunca fica órfão no fim da página
         )
-        self.body = ParagraphStyle("body", fontName=regular, fontSize=8, leading=10, spaceAfter=2)
+        self.body = ParagraphStyle("body", fontName=regular, fontSize=8, leading=10.5, spaceAfter=3)
         self.cell = ParagraphStyle("cell", fontName=regular, fontSize=7, leading=8.4)
         self.cell_head = ParagraphStyle("cell_head", fontName=bold, fontSize=7, leading=8.4)
         self.caption = ParagraphStyle(
@@ -228,12 +230,12 @@ class _Builder:
         return [
             self.para(c.titulo, self.s.title),
             self.para(c.subtitulo, self.s.subtitle),
-            Spacer(1, 3),
+            Spacer(1, 6),
             Paragraph(
                 f"<b>Integrantes:</b> {self.text(', '.join(n for n in c.integrantes if n))}",
                 self.s.members,
             ),
-            Spacer(1, 2),
+            Spacer(1, 5),
         ]
 
     def estrategia(self) -> list[Flowable]:
@@ -246,7 +248,7 @@ class _Builder:
         if c.estrategia_tabela is not None:
             out.append(self.table(c.estrategia_tabela))
         if c.estrategia_evidencia:
-            out += [Spacer(1, 2), self.lead("Evidência medida:", c.estrategia_evidencia)]
+            out += [Spacer(1, 5), self.lead("Evidência medida:", c.estrategia_evidencia)]
         return out
 
     def prompt(self) -> list[Flowable]:
@@ -259,10 +261,10 @@ class _Builder:
         return [
             self.section(1),
             versions,
-            Spacer(1, 2),
+            Spacer(1, 5),
             self.lead("O que muda:", c.prompt_diff),
             self.table(c.prompt_comparacao),
-            Spacer(1, 2),
+            Spacer(1, 5),
             self.lead("O que a comparação mostrou:", c.prompt_conclusao),
         ]
 
@@ -283,7 +285,7 @@ class _Builder:
         c = self.c
         out: list[Flowable] = [self.section(3)]
         for i, block in enumerate(c.resultados_auditoria.blocks()):
-            out += [self._audit_block(block), Spacer(1, 2)]
+            out += [self._audit_block(block), Spacer(1, 5)]
             if i == 0 and c.destaque_auditoria:  # logo após a fidelidade, onde foi detectado
                 out += [Paragraph(f"<b>{self.text(c.destaque_auditoria)}</b>", self.s.body)]
         out.append(self.lead("Regra de confiança (declarada):", c.regra_confianca))
@@ -329,7 +331,7 @@ class _Builder:
                 else self.lead("Premissa de preço:", cost.premissa)
             ),
             self.table(cost.tabela),
-            Spacer(1, 2),
+            Spacer(1, 5),
             self.lead("Razão ingênuo/real:", f"a alternativa ingênua custa {razao}× a real."),
         ]
         if cost.comentario:

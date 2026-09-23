@@ -167,7 +167,7 @@ class ReportContent:
     destaque_auditoria: str = ""
     """Opcional: o caso que a rubrica pede em destaque — uma invenção convincente, como foi
     detectada e por que a detecção funcionou. Parágrafo próprio, em negrito, na seção 4."""
-    subtitulo: str = "Computação Cognitiva · ESPM · 2026.2 · Atividade de Construção I"
+    subtitulo: str = "Computação Cognitiva · Ciência de Dados e Negócios · ESPM · 2026.2 · Prof. André Insardi"
     figuras: list[Path] = field(default_factory=list)
     """Figuras opcionais; só entram no PDF se couberem nas 3 páginas."""
 
@@ -182,7 +182,7 @@ def sample_content() -> ReportContent:
     Os números são ilustrativos; no notebook, cada um vem de um objeto da auditoria.
     """
     return ReportContent(
-        titulo="A ficha que você teria de defender — relatório do grupo",
+        titulo="Atividade de Construção I — Ficha comparativa de 19 artigos",
         integrantes=["Ana Souza", "Bruno Conceição", "Carla Ribeiro", "Diego Araújo"],
         estrategia_escolhida="semantic (trechos por similaridade), com keyword como alternativa",
         estrategia_justificativa=(

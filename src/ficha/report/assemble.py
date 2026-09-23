@@ -123,10 +123,9 @@ class Narrative:
     """Sobrescreve o parágrafo de destaque gerado por :func:`invention_highlight`."""
     declaracao_uso_ia: str = (
         "Usamos assistentes de IA para escrever partes do código e revisar textos. As decisões "
-        "de projeto, os números e as conclusões foram verificados pelo grupo, que sabe "
-        "explicar cada linha do código entregue."
+        "de projeto, os números e as conclusões foram verificados pelo grupo."
     )
-    titulo: str = "A ficha que você teria de defender — extração auditável de 19 artigos"
+    titulo: str = "Atividade de Construção I — Ficha comparativa de 19 artigos"
     conclusoes: dict[str, str] = field(default_factory=dict)
     """Sobrescritas das conclusões automáticas: chaves ``fidelidade``, ``estabilidade``,
     ``entrada``, ``temperatura``, ``prompt``, ``custo``."""
