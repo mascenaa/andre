@@ -38,6 +38,37 @@ class Evidencia(BaseModel):
     pagina: int = Field(..., ge=1, description="Página (1-based) onde o trecho aparece.")
 
 
+LIMITACAO_SENTINELAS: frozenset[str] = frozenset(
+    {
+        "",
+        "null",
+        "none",
+        "n/a",
+        "na",
+        "nenhuma",
+        "não declarada",
+        "nao declarada",
+        "não informado",
+        "nao informado",
+        "não informada",
+        "nao informada",
+        "not informed",
+        "not reported",
+        "not stated",
+        "not specified",
+        "not declared",
+        "none declared",
+    }
+)
+"""Formas textuais que o modelo usa no lugar do literal ``null`` em ``limitacao``.
+
+"não informado" entrou após a execução real: o prompt manda usar essa expressão nos campos
+obrigatórios sem informação e ``null`` em ``limitacao``; o Qwen2.5-3B misturou as duas
+(11_Jarolim). Normalizar aqui mantém a ficha válida e o parser registra o reparo
+``limitacao_sentinela`` — a ausência continua contando como abstenção, não como limitação.
+"""
+
+
 class FichaExtraida(BaseModel):
     """Saída estruturada esperada do modelo. Ver docstring do módulo."""
 
@@ -68,15 +99,7 @@ class FichaExtraida(BaseModel):
         """
         if v is None:
             return None
-        if isinstance(v, str) and v.strip().lower() in {
-            "",
-            "null",
-            "none",
-            "n/a",
-            "na",
-            "não declarada",
-            "nao declarada",
-        }:
+        if isinstance(v, str) and v.strip().lower() in LIMITACAO_SENTINELAS:
             return None
         return v
 
