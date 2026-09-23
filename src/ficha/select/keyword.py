@@ -26,6 +26,7 @@ registra ``params["fallback"] = "first_pages(2)"``.
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from ficha.select.chunking import find_cut
@@ -34,17 +35,29 @@ from ficha.types import Chunk, Context, Document
 
 SECTION_PATTERNS: tuple[tuple[str, str], ...] = (
     ("abstract", r"abstract"),
-    ("limitations", r"limitations?(?:\s+and\s+future\s+work)?|threats\s+to\s+(?:the\s+)?validity"),
+    (
+        "limitations",
+        r"(?:current\s+|main\s+|study\s+)?limitations?(?:\s+and\s+future\s+work)?"
+        r"|threats\s+to\s+(?:the\s+)?validity|caveats?",
+    ),
     (
         "methods",
         r"materials\s+and\s+methods|methods?|methodology|approach|proposed\s+(?:method|approach)",
     ),
-    ("data", r"data\s+and\s+methods|data(?:sets?)?|data\s+(?:collection|description)"),
+    (
+        "data",
+        r"data\s+and\s+methods|data(?:sets?)?(?!\s+availability)|data\s+(?:collection|description)",
+    ),
     ("results", r"results(?:\s+and\s+discussion)?"),
     ("experiments", r"experiments?|experimental\s+(?:setup|settings?|design|results)"),
     ("evaluation", r"evaluation"),
-    ("discussion", r"discussion"),
-    ("conclusion", r"conclusions?(?:\s+and\s+future\s+work)?|concluding\s+remarks"),
+    ("discussion", r"summary\s+and\s+discussions?|discussions?"),
+    (
+        "conclusion",
+        r"(?:summary|comments)\s+and\s+conclusions?"
+        r"|conclusions?(?:\s+and\s+(?:future\s+work|discussions?))?|concluding\s+remarks",
+    ),
+    ("outlook", r"outlook|future\s+(?:work|directions|perspectives)"),
 )
 """(seção canônica, regex da palavra-chave), **em ordem de prioridade** para o orçamento."""
 
@@ -55,13 +68,15 @@ _ALTERNATION = "|".join(f"(?P<{name}>{pat})" for name, pat in SECTION_PATTERNS)
 _ALTERNATION_BARE = "|".join(f"(?P<{name}_b>{pat})" for name, pat in SECTION_PATTERNS)
 HEADING_RE = re.compile(
     rf"^(?:{_NUMBERING}[ \t]+(?:{_ALTERNATION})\b"
-    rf"|(?:{_ALTERNATION_BARE})[ \t]*(?=[.:\u2014\u2013]|$))",
+    rf"|(?:{_ALTERNATION_BARE})(?:[ \t]*(?=[.:\u2014\u2013]|$)|[ \t]+(?=[^\n.:]{{1,60}}$)))",
     re.IGNORECASE | re.MULTILINE,
 )
 REFERENCES_RE = re.compile(
     rf"^(?:{_NUMBERING}[ \t]+)?(?:references|bibliography)[ \t]*$",
     re.IGNORECASE | re.MULTILINE,
 )
+CLOSING_SECTIONS: tuple[str, ...] = ("limitations", "discussion", "conclusion", "outlook")
+"""Seções de fechamento: onde os autores costumam admitir limitações (usadas pelo ``hybrid``)."""
 MIN_WINDOW = 200
 """Janela mínima que vale a pena enviar quando o orçamento está acabando."""
 
@@ -104,13 +119,27 @@ def find_headings(doc: Document) -> list[Heading]:
 class KeywordSectionSelector:
     """Janelas de texto após cabeçalhos de seção, dentro de um orçamento de caracteres."""
 
-    def __init__(self, window_chars: int = 1500, max_chars: int = 6000) -> None:
+    def __init__(
+        self,
+        window_chars: int = 1500,
+        max_chars: int = 6000,
+        sections: Sequence[str] | None = None,
+    ) -> None:
+        if sections is not None:
+            unknown = set(sections) - set(PRIORITY)
+            if unknown:
+                raise ValueError(
+                    f"Seções desconhecidas: {sorted(unknown)}; opções: {list(PRIORITY)}"
+                )
         if window_chars < MIN_WINDOW:
             raise ValueError(f"window_chars deve ser >= {MIN_WINDOW}, recebido {window_chars}")
         if max_chars < window_chars:
             raise ValueError("max_chars deve ser >= window_chars")
         self.window_chars = window_chars
         self.max_chars = max_chars
+        self.sections = tuple(sections) if sections is not None else None
+        """Restringe as seções usadas (``None`` = todas). Com restrição, o início do artigo
+        não é incluído automaticamente."""
 
     @property
     def name(self) -> str:
@@ -131,6 +160,9 @@ class KeywordSectionSelector:
                 for h in all_heads
                 if h.page == page_no and h.start >= start and h is not head
             ]
+            refs = REFERENCES_RE.search(text, start + 1)
+            if refs:
+                nxt.append(refs.start())
             stop = min([len(text), *nxt])
             hard = min(start + remaining, stop)
             end = hard if hard == stop else find_cut(text, start + (hard - start) // 2, hard)
@@ -161,14 +193,40 @@ class KeywordSectionSelector:
                 merged.append((page, start, end, label))
         return merged
 
+    def section_windows(self, doc: Document, sections: Sequence[str]) -> list[Chunk]:
+        """Uma janela (até ``window_chars``) para **cada** cabeçalho das ``sections`` dadas.
+
+        Sem orçamento total e sem fallback: quem chama decide quanto usar (ver ``hybrid``).
+        Os chunks vêm na ordem do artigo, com ``label`` = cabeçalho casado.
+        """
+        all_headings = find_headings(doc)
+        chunks: list[Chunk] = []
+        for head in all_headings:
+            if head.section not in sections:
+                continue
+            for page, start, end, label in self._window(doc, head, self.window_chars, all_headings):
+                chunks.append(
+                    Chunk(
+                        arquivo=doc.arquivo,
+                        page=page,
+                        text=doc.page(page).text[start:end],
+                        start=start,
+                        end=end,
+                        label=label,
+                    )
+                )
+        return chunks
+
     # ------------------------------------------------------------------ seleção
     def select(self, doc: Document) -> Context:
         """Seleciona as seções de ``doc`` por palavra-chave."""
-        headings = find_headings(doc)
+        all_headings = find_headings(doc)
+        headings = [h for h in all_headings if self.sections is None or h.section in self.sections]
         params: dict[str, object] = {
             "window_chars": self.window_chars,
             "max_chars": self.max_chars,
-            "sections_found": [h.label for h in headings],
+            "sections": list(self.sections) if self.sections is not None else None,
+            "sections_found": [h.label for h in all_headings],
         }
         if not headings:
             fb = FirstPagesSelector(n_pages=2, max_chars=self.max_chars).select(doc)
@@ -180,7 +238,7 @@ class KeywordSectionSelector:
         for h in headings:
             first.setdefault(h.section, h)
         chosen = sorted(first.values(), key=lambda h: PRIORITY[h.section])
-        if "abstract" not in first:
+        if "abstract" not in first and self.sections is None:
             start_page = next((p for p in doc.pages if p.text.strip()), doc.pages[0])
             chosen.insert(0, Heading("inicio", "início do artigo", start_page.number, 0))
 
@@ -190,7 +248,7 @@ class KeywordSectionSelector:
         for head in chosen:
             if budget < MIN_WINDOW:
                 break
-            window = self._window(doc, head, budget, headings)
+            window = self._window(doc, head, budget, all_headings)
             if window:
                 selected.append(head.label)
                 spans.extend(window)

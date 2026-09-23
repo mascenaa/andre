@@ -60,6 +60,17 @@ class Settings(BaseSettings):
             "ficam nas páginas finais e não chegavam ao modelo (ver ADR 0002, revisão)."
         ),
     )
+    hybrid_tail_pages: int = Field(
+        default=0,
+        description="Páginas finais incluídas à força na híbrida (0 = nenhuma; sem efeito a 12k).",
+    )
+    hybrid_cue_windows: int = Field(
+        default=10,
+        description=(
+            "Janelas (≤600 chars) em torno de frases com pistas de limitação no corpo do artigo. "
+            "Foi o que mais elevou a cobertura de limitações declaradas (ADR 0002, revisão)."
+        ),
+    )
     semantic_max_chars: int | None = Field(
         default=8000,
         description=(

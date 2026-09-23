@@ -309,4 +309,4 @@ def test_registry_unknown_name() -> None:
 
 
 def test_names_are_stable() -> None:
-    assert SELECTOR_NAMES == ("first_pages", "keyword", "semantic")
+    assert SELECTOR_NAMES == ("first_pages", "keyword", "semantic", "hybrid")

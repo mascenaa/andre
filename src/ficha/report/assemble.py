@@ -21,8 +21,10 @@ from typing import Any
 import pandas as pd
 
 from ficha.audit import AuditSummary, PromptComparison
+from ficha.audit.confidence import CALIBRACAO_ENTRADA
+from ficha.audit.normalize import normalize_for_match
 from ficha.cost import CostComparison, CostReport
-from ficha.prompts import VARIANTS, describe_diff
+from ficha.prompts import FEW_SHOT_EXAMPLES, VARIANTS, describe_diff
 from ficha.report.content import (
     AuditBlock,
     AuditResults,
@@ -30,6 +32,7 @@ from ficha.report.content import (
     PromptVersion,
     ReportContent,
 )
+from ficha.types import Document
 
 _FEATURE_LABELS = {
     "role": "papel",
@@ -97,12 +100,20 @@ class Narrative:
     )
     o_que_faria_diferente: list[str] = field(
         default_factory=lambda: [
-            "Anotar à mão um gabarito de alguns artigos para medir acurácia, não só "
-            "consistência e fidelidade.",
+            "Anotar à mão um gabarito de limitacao em 5 artigos, para separar abstenção "
+            "correta de omissão (hoje indistinguíveis).",
+            'Instruir explicitamente "não copie os exemplos" no prompt e medir se o '
+            "vazamento do few-shot para a evidência desaparece.",
             "Comparar o modelo local com um modelo por API nas mesmas 19 fichas.",
-            "Testar a variante com raciocínio em campo separado (v_cot) e medir se compensa.",
         ]
     )
+    cobertura_limitacao: str = ""
+    """Evidência medida sobre a seleção (ex.: quantas frases de limitação do texto completo
+    chegam ao contexto de cada estratégia). Vai para a seção 1 do relatório."""
+    nota_limitacao: str = ""
+    """Frase sobre ``limitacao`` null (gabarito, heurística), anexada à conclusão de 4.4c."""
+    destaque: str | None = None
+    """Sobrescreve o parágrafo de destaque gerado por :func:`invention_highlight`."""
     declaracao_uso_ia: str = (
         "Usamos assistentes de IA para escrever partes do código e revisar textos. As decisões "
         "de projeto, os números e as conclusões foram verificados pelo grupo, que sabe "
@@ -122,15 +133,46 @@ def _top_fields(rates: Mapping[str, float], k: int = 3) -> str:
     return ", ".join(f"{f} {pct(r)}" for f, r in changed) or "nenhum"
 
 
+def short_name(arquivo: str) -> str:
+    """Rótulo curto de um artigo: ``08_Leka_2019_Comparison...pdf`` → ``08_Leka_2019``."""
+    stem = arquivo.removesuffix(".pdf")
+    parts = stem.split("_")
+    return "_".join(parts[:3]) if len(parts) > 3 else stem
+
+
+def few_shot_leak(trecho: str) -> str | None:
+    """Nome do exemplo few-shot de onde ``trecho`` foi copiado, ou ``None``.
+
+    Um trecho que existe no exemplo do prompt, mas não no artigo, é a invenção mais
+    convincente possível: frase real, bem formada, com cara de artigo científico.
+    """
+    needle = normalize_for_match(trecho)
+    if len(needle) < 20:
+        return None
+    for ex in FEW_SHOT_EXAMPLES:
+        if needle in normalize_for_match(ex.context_text) or needle in normalize_for_match(
+            ex.output.evidencia.trecho
+        ):
+            return ex.name
+    return None
+
+
+def _trechos(summary: AuditSummary) -> dict[str, str]:
+    return {f.arquivo: f.ficha.evidencia.trecho for f in summary.fichas if not f.failed}
+
+
 def fidelity_block(summary: AuditSummary) -> AuditBlock:
-    """4.4a — quantos trechos existem no texto enviado.
+    """4.4a — quantos trechos existem no texto enviado, e com a página certa.
 
     ``failures()`` mistura dois casos que o relatório separa: trecho devolvido mas ausente do
     texto enviado (invenção) e extração sem ficha (``method == "none"``, nada a verificar).
+    Trechos encontrados em página diferente da declarada são listados à parte.
     """
     fid = summary.fidelity
-    inventados = [r.arquivo for r in fid.failures() if r.method != "none"]
+    trechos = _trechos(summary)
+    inventados = [r for r in fid.failures() if r.method != "none"]
     sem_ficha = [r.arquivo for r in fid.failures() if r.method == "none"]
+    pagina_errada = [r for r in fid.results if r.found and not r.page_ok]
     by = fid.by_method
     numeros = {
         "trecho encontrado": f"{fid.n_found}/{fid.n} ({pct(fid.rate_found)})",
@@ -141,19 +183,72 @@ def fidelity_block(summary: AuditSummary) -> AuditBlock:
     }
     partes: list[str] = []
     if inventados:
+        itens = []
+        for r in inventados:
+            leak = few_shot_leak(trechos.get(r.arquivo, ""))
+            origem = " (cópia do exemplo few-shot do prompt)" if leak else ""
+            itens.append(f"{short_name(r.arquivo)}{origem}")
         partes.append(
-            f"{len(inventados)} de {fid.n} trechos não existem no texto enviado — tratados como "
-            f"inventados: {', '.join(inventados)}."
+            f"{len(inventados)}/{fid.n} trecho(s) inventado(s), ausente(s) do texto enviado: "
+            f"{', '.join(itens)}."
+        )
+    if pagina_errada:
+        itens = [
+            f"{short_name(r.arquivo)}: declarada {r.page_claimed}, encontrada {r.page_found}"
+            for r in pagina_errada
+        ]
+        partes.append(
+            f"Página errada em {len(pagina_errada)}/{fid.n} ({'; '.join(itens)}): trecho real, "
+            "mas a ficha não é rastreável como declarada — BAIXA."
         )
     if sem_ficha:
         partes.append(
             f"{len(sem_ficha)} extração(ões) sem ficha válida, sem trecho a verificar: "
-            f"{', '.join(sem_ficha)}."
+            f"{', '.join(short_name(a) for a in sem_ficha)}."
         )
     conclusao = " ".join(partes) or (
-        f"Todos os {fid.n} trechos foram localizados no texto enviado ao modelo."
+        f"Todos os {fid.n} trechos foram localizados no texto enviado, na página declarada."
     )
     return AuditBlock("a) Fidelidade", numeros, conclusao)
+
+
+def invention_highlight(summary: AuditSummary) -> str:
+    """Parágrafo de destaque sobre a invenção mais convincente (o que a rubrica pede).
+
+    Prioriza um trecho copiado do exemplo few-shot; senão, o primeiro trecho não encontrado.
+    Vazio se não houve trecho inventado.
+    """
+    trechos = _trechos(summary)
+    by_file = {f.arquivo: f for f in summary.fichas}
+    inventados = [r for r in summary.fidelity.failures() if r.method != "none"]
+    if not inventados:
+        return ""
+    leaks = [(r, few_shot_leak(trechos.get(r.arquivo, ""))) for r in inventados]
+    r, leak = next(((r, lk) for r, lk in leaks if lk), leaks[0])
+    trecho = trechos.get(r.arquivo, "")
+    formato = (
+        "O JSON era válido de primeira e a página declarada, plausível: nenhuma checagem de "
+        "formato o pegaria. "
+        if by_file.get(r.arquivo) is not None and by_file[r.arquivo].parse_status.value == "ok"
+        else ""
+    )
+    if leak:
+        origem = (
+            "a frase do EXEMPLO few-shot do prompt, ausente do artigo. Detectado porque a "
+            "fidelidade compara o trecho com o texto efetivamente enviado ao modelo, e o exemplo "
+            "não faz parte dele"
+        )
+    else:
+        origem = (
+            "uma frase que não existe no texto enviado. Detectado porque a fidelidade compara o "
+            "trecho com o texto efetivamente enviado ao modelo, não com o que parece plausível"
+        )
+    return (
+        f"Invenção convincente — {short_name(r.arquivo)}: o modelo devolveu como evidência "
+        f"«{trecho}», {origem} (similaridade {format_sim(r.score)} < limiar "
+        f"{format_sim(r.threshold)}). "
+        f"{formato}A ficha foi rebaixada a BAIXA."
+    )
 
 
 def stability_block(summary: AuditSummary) -> AuditBlock:
@@ -177,7 +272,11 @@ def stability_block(summary: AuditSummary) -> AuditBlock:
             f"o campo mais instável é '{worst[0][0]}' ({pct(worst[0][1])} dos artigos)."
         )
     else:
-        conclusao = f"As {d.n_pairs} fichas foram idênticas nas duas execuções."
+        conclusao = (
+            f"{d.n_identical}/{d.n_pairs} fichas idênticas nas duas execuções — esperado com "
+            "decodificação gulosa e seed fixa. Por isso a variabilidade real do pipeline aparece "
+            "no efeito da entrada (c) e da temperatura (d), não aqui."
+        )
     return AuditBlock("b) Estabilidade", numeros, conclusao)
 
 
@@ -198,9 +297,70 @@ def input_block(summary: AuditSummary) -> AuditBlock:
             f"{ie.strategy_b} {pct(ie.fidelity_b.rate_found)}"
         ),
         "campos que mais divergem": _top_fields(d.field_change_rate),
+        "limitacao null": (
+            f"{ie.strategy_a} {_count(ie.stats_a.rate_limitacao_null, ie.stats_a.n)} · "
+            f"{ie.strategy_b} {_count(ie.stats_b.rate_limitacao_null, ie.stats_b.n)}"
+        ),
     }
     conclusao = f"Defendemos {verdict.strategy}: {verdict.explanation}"
     return AuditBlock("c) Efeito da entrada", numeros, conclusao)
+
+
+def _count(rate: float, n: int) -> str:
+    """``0.947, 19`` → ``"18/19"``."""
+    return f"{round(rate * n)}/{n}"
+
+
+TEXT_FIELDS: tuple[str, ...] = ("problema", "dados", "metodo", "metrica", "evidencia.trecho")
+"""Campos de texto livre usados na calibração da regra de confiança."""
+
+
+def mean_text_similarity(similarities: Mapping[str, float]) -> float | None:
+    """Média da similaridade dos campos de texto livre (``TEXT_FIELDS``) de um ``DiffReport``."""
+    vals = [similarities[f] for f in TEXT_FIELDS if f in similarities]
+    vals = [v for v in vals if not pd.isna(v)]
+    return sum(vals) / len(vals) if vals else None
+
+
+def calibration_sentence(
+    summary: AuditSummary, distributions: Mapping[str, Mapping[str, int]] | None = None
+) -> str:
+    """Por que a regra final compara estratégias só por discordância categórica.
+
+    Números: similaridade média dos campos de texto livre entre estratégias × entre repetições,
+    e (se dadas) as distribuições de confiança de cada versão da regra.
+    """
+    partes: list[str] = []
+    if distributions:
+        dist_txt = "; ".join(
+            f"{nome}: alta {d.get('alta', 0)}/média {d.get('media', 0)}/baixa {d.get('baixa', 0)}"
+            for nome, d in distributions.items()
+        )
+        partes.append(f"Calibração da regra — {dist_txt}.")
+    entre_estrategias = (
+        mean_text_similarity(summary.input_effect.diff.field_mean_similarity)
+        if summary.input_effect
+        else None
+    )
+    entre_repeticoes = (
+        mean_text_similarity(summary.stability.diff.field_mean_similarity)
+        if summary.stability
+        else None
+    )
+    if entre_estrategias is not None and entre_repeticoes is not None:
+        partes.append(
+            "A similaridade média dos campos de texto livre é "
+            f"{format_sim(entre_estrategias)} entre estratégias (paráfrase de entradas "
+            f"diferentes) e {format_sim(entre_repeticoes)} entre repetições: comparar o texto "
+            "exato entre estratégias mede redação, não confiabilidade. Por isso a regra final só "
+            "conta discordância categórica entre estratégias (limitação declarada × null)."
+        )
+    return " ".join(partes)
+
+
+def format_sim(value: float) -> str:
+    """Similaridade 0–1 com duas casas e vírgula decimal."""
+    return f"{value:.2f}".replace(".", ",")
 
 
 def temperature_block(summary: AuditSummary) -> AuditBlock:
@@ -222,10 +382,43 @@ def temperature_block(summary: AuditSummary) -> AuditBlock:
         conclusao = f"A escolha de t={t0} se sustenta: t={ta} não melhora validade nem fidelidade."
     else:
         conclusao = (
-            f"A escolha de t={t0} NÃO se sustenta pelo critério declarado: t={ta} teve validade "
-            "ou fidelidade maior neste subconjunto — reportado como está."
+            f"Pelo critério declarado, t={t0} não se sustenta neste subconjunto: t={ta} teve "
+            f"fidelidade {pct(tr.rate_fidelity_alt)} vs {pct(tr.rate_fidelity_t0)} em t={t0}."
+        )
+        erros_t0 = _t0_errors(summary, tr.arquivos)
+        if erros_t0:
+            conclusao += f" Erro(s) em t={t0}: {erros_t0}."
+    n = len(tr.arquivos)
+    if n < SMALL_SUBSET:
+        estab = summary.stability.diff if summary.stability else None
+        manter = (
+            f" Mantemos t={t0} pela estabilidade ({estab.n_identical}/{estab.n_pairs} fichas "
+            "idênticas entre repetições)"
+            if estab is not None
+            else f" Mantemos t={t0}"
+        )
+        conclusao += (
+            f" Com n={n} artigos, a diferença não sustenta conclusão.{manter} e reportamos o "
+            "resultado como está."
         )
     return AuditBlock("d) Efeito da temperatura", numeros, conclusao)
+
+
+SMALL_SUBSET = 10
+"""Abaixo deste número de artigos, a comparação de temperatura é reportada como indicativa."""
+
+
+def _t0_errors(summary: AuditSummary, arquivos: Sequence[str]) -> str:
+    """Falhas de fidelidade da execução principal dentro do subconjunto, com a causa."""
+    trechos = _trechos(summary)
+    subset = set(arquivos)
+    out = []
+    for r in summary.fidelity.failures():
+        if r.arquivo not in subset:
+            continue
+        leak = few_shot_leak(trechos.get(r.arquivo, ""))
+        out.append(short_name(r.arquivo) + (" (vazamento do exemplo few-shot)" if leak else ""))
+    return ", ".join(out)
 
 
 def _num(value: Any) -> float | None:
@@ -304,6 +497,44 @@ def nao_defensaveis_table(summary: AuditSummary) -> pd.DataFrame:
     )
 
 
+def final_pages_share(docs: Sequence[Document], last_fraction: float = 1 / 3) -> float | None:
+    """Fração das frases de limitação declarada que ficam no último terço de cada artigo."""
+    from ficha.select import limitation_sentences
+
+    total = final = 0
+    for d in docs:
+        cut = d.n_pages * (1 - last_fraction)
+        for page, _ in limitation_sentences(d):
+            total += 1
+            final += page > cut
+    return final / total if total else None
+
+
+def coverage_sentence(recall: pd.DataFrame, n_docs: int, final_share: float | None = None) -> str:
+    """Frase da seção 1 a partir da tabela ``ficha.select.recall_table`` (sem números à mão)."""
+    if recall.empty:
+        return ""
+    first = recall.to_dict("records")[0]
+    rows = recall.to_dict("records")
+    por_estrategia = ", ".join(
+        f"{r['estrategia']} {int(r['frases_no_contexto'])} ({pct(_num(r['recall_frases']))}; "
+        f"{int(r['artigos_cobertos'])}/{int(r['artigos_com_frases'])} artigos)"
+        for r in rows
+    )
+    onde = (
+        f" Só {pct(final_share)} delas estão no último terço do artigo: estão espalhadas, e "
+        "nenhuma estratégia de orçamento fixo cobre a maioria."
+        if final_share is not None
+        else ""
+    )
+    return (
+        f"Das {int(first['frases_total'])} frases em que os autores declaram limitação "
+        f"({int(first['artigos_com_frases'])} dos {n_docs} artigos têm ao menos uma), chegaram ao "
+        f"contexto enviado: {por_estrategia}.{onde} O null em limitacao é sobretudo efeito da "
+        "seleção (o modelo não declara o que não recebe), não da abstenção do modelo."
+    )
+
+
 def build_report_content(
     *,
     integrantes: Sequence[str],
@@ -315,6 +546,7 @@ def build_report_content(
     strategy_table: pd.DataFrame | None = None,
     narrative: Narrative | None = None,
     figuras: Sequence[Path] = (),
+    rule_distributions: Mapping[str, Mapping[str, int]] | None = None,
 ) -> ReportContent:
     """Monta o conteúdo completo do relatório a partir dos resultados medidos.
 
@@ -329,6 +561,8 @@ def build_report_content(
         strategy_table: resumo das estratégias de seleção (opcional).
         narrative: textos de justificativa; padrão: resumo dos ADRs.
         figuras: PNGs opcionais (entram só se couberem nas 3 páginas).
+        rule_distributions: distribuições de confiança por versão da regra (ex.:
+            ``{"v1 estrita": {...}, "v2 categórica (final)": {...}}``) para a calibração.
 
     """
     nar = narrative or Narrative()
@@ -346,11 +580,19 @@ def build_report_content(
     for key in ("fidelidade", "estabilidade", "entrada", "temperatura"):
         if key in over:
             getattr(blocks, key).conclusao = over[key]
+    if nar.nota_limitacao:
+        blocks.entrada.conclusao += f" {nar.nota_limitacao}"
     dist = summary.confidence_distribution
+    # O texto fixo de calibração da regra é um instantâneo; no relatório vale o calculado
+    # a partir destes dados (``calibration_sentence``), para não haver dois números.
+    regra_txt = summary.rule.describe().replace(CALIBRACAO_ENTRADA, "").rstrip()
     regra = (
-        f"{summary.rule.describe()}\nDistribuição resultante: alta {dist['alta']}, "
+        f"{regra_txt}\nDistribuição resultante: alta {dist['alta']}, "
         f"média {dist['media']}, baixa {dist['baixa']}."
     )
+    calibracao = calibration_sentence(summary, rule_distributions)
+    if calibracao:
+        regra += f"\n{calibracao}"
     custo = cost_section(cost, cost_per_run)
     if "custo" in over:
         custo.comentario = over["custo"]
@@ -375,4 +617,8 @@ def build_report_content(
         o_que_faria_diferente=list(nar.o_que_faria_diferente),
         declaracao_uso_ia=nar.declaracao_uso_ia,
         figuras=list(figuras),
+        estrategia_evidencia=nar.cobertura_limitacao,
+        destaque_auditoria=(
+            nar.destaque if nar.destaque is not None else invention_highlight(summary)
+        ),
     )

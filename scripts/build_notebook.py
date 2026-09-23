@@ -98,6 +98,9 @@ def cells(integrantes: list[str]) -> list[nbformat.NotebookNode]:
             MODO = os.environ.get("FICHA_MODO", "ensaio")  # troque para "real" na entrega
             BACKEND_REAL = "qwen_local"  # ou "anthropic" / "openai_compat" (declare no relatório)
             RAW_DIR = None  # ex.: Path("/content/drive/MyDrive/artigos") — None = data/raw
+            # Reutiliza execuções já gravadas em data/runs (mesma configuração) em vez de chamar
+            # o modelo de novo — ver seção 6. FICHA_REUSAR=0 força reexecutar tudo.
+            REUSAR_EXECUCOES = os.environ.get("FICHA_REUSAR", "1") == "1"
 
             try:
                 import google.colab  # noqa: F401
@@ -135,7 +138,7 @@ def cells(integrantes: list[str]) -> list[nbformat.NotebookNode]:
             from ficha.llm.qwen_local import describe_gpu
 
             set_seeds(42)
-            print(f"MODO={{MODO}} · Colab={{IN_COLAB}} · raiz={{ROOT}}")
+            print(f"MODO={{MODO}} · reusar execuções={{REUSAR_EXECUCOES}} · Colab={{IN_COLAB}} · raiz={{ROOT}}")
             print("GPU:", describe_gpu() or "nenhuma (ok no modo ensaio; no modo real use a T4)")
             print("Chaves no ambiente (só presença):",
                   {{n: bool(os.environ.get(n)) for n in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY")}})
@@ -258,8 +261,10 @@ def cells(integrantes: list[str]) -> list[nbformat.NotebookNode]:
                     print("ATENÇÃO: sentence-transformers ausente; usando HashingEmbedder (declare no relatório).")
             else:
                 embedder = None  # SentenceTransformer multilíngue das Settings
-            selectors = {nome: build_selector(nome, settings, embedder) for nome in SELECTOR_NAMES}
-            ESTRATEGIA, ESTRATEGIA_ALT = "semantic", "first_pages"
+            ESTRATEGIA = os.environ.get("FICHA_ESTRATEGIA", "semantic")  # principal (4.1)
+            ESTRATEGIA_ALT = "first_pages"  # comparação 4.4c
+            nomes = dict.fromkeys([*SELECTOR_NAMES, ESTRATEGIA, ESTRATEGIA_ALT])
+            selectors = {nome: build_selector(nome, settings, embedder) for nome in nomes}
 
             exemplo = docs[0]
             for nome, sel in selectors.items():
@@ -275,6 +280,45 @@ def cells(integrantes: list[str]) -> list[nbformat.NotebookNode]:
             selecao = selection_frame(docs, list(selectors.values()), count_tokens)
             resumo_estrategias = strategy_summary(selecao)
             display(resumo_estrategias)
+            """
+        ),
+        md(
+            """
+            ### A limitação declarada chega ao modelo?
+
+            O campo `limitacao` só pode ser preenchido se a frase em que os autores declaram a
+            limitação estiver no texto enviado. `ficha.select.recall_table` mede isso sobre o
+            **texto completo** de cada artigo: localiza as frases com declaração forte de
+            limitação ("a limitation of this study", "is limited by", "beyond the scope of this
+            work"...) e conta quantas chegam ao contexto de cada estratégia. É um diagnóstico
+            offline — não chama o modelo.
+
+            Se poucas chegam, o `null` em `limitacao` é sobretudo efeito da **seleção** (o modelo
+            não pode declarar o que não recebe), e não da abstenção do modelo.
+            """
+        ),
+        code(
+            """
+            import ficha.select as _select
+            from ficha.report.assemble import coverage_sentence, final_pages_share
+
+            recall_table = getattr(_select, "recall_table", None)
+            if recall_table is None:
+                COBERTURA_LIMITACAO = ""
+                print("recall_table ainda não existe no pacote.")
+            else:
+                recall = recall_table(docs, selectors)
+                display(recall)
+                COBERTURA_LIMITACAO = coverage_sentence(recall, len(docs), final_pages_share(docs))
+                if MODO == "real":  # revisão manual das frases detectadas (ADR 0002)
+                    COBERTURA_LIMITACAO += (
+                        " O detector é um regex ruidoso: na revisão manual só ~18 das frases são "
+                        "limitações admitidas pelos autores (precisão ≈ 30%, ADR 0002)."
+                    )
+                print(COBERTURA_LIMITACAO)
+                for d in docs[:4]:
+                    paginas = sorted({p for p, _ in _select.limitation_sentences(d)})
+                    print(f"  {d.arquivo[:30]}: frases de limitação nas páginas {paginas} de {d.n_pages}")
             """
         ),
         # ------------------------------------------------------------------ 5. prompt
@@ -328,16 +372,46 @@ def cells(integrantes: list[str]) -> list[nbformat.NotebookNode]:
             | c) prompt alternativo | v_sem_fewshot | semantic | 0,0 | todos | 4.2 comparação |
             | d) entrada alternativa | v_full | first_pages | 0,0 | todos | 4.4c efeito da entrada |
             | e) temperatura | v_full | semantic | 0,7 | subconjunto | 4.4d temperatura |
+
+            **Reutilização (Seção 7, reprodutibilidade):** as saídas brutas gravadas são a fonte da
+            auditoria; com `REUSAR_EXECUCOES`, uma execução com a mesma configuração (estratégia,
+            variante, temperatura, repetição e artigos) é carregada de `data/runs` em vez de
+            refeita — reexecutar custa ~1 h de GPU e não muda a auditoria com decodificação gulosa
+            e seed fixa (a repetição da seção 8b mostra isso).
             """
         ),
         code(
             """
-            from ficha.extract import ExtractionRunner, RunStore, reparse
+            from ficha.extract import ExtractionRunner, RunResult, RunStore, reparse
             from ficha.types import GenerationParams, ParseStatus
 
             store = RunStore(settings.runs_dir)
 
+            def execucao_gravada(estrategia, variante, temperatura, repeticao, documentos):
+                # run_id mais recente com a mesma configuração e os mesmos artigos, ou None.
+                arquivos = sorted(d.arquivo for d in documentos)
+                for run_id in reversed(store.list_runs()):
+                    try:
+                        m = store.manifest(run_id)
+                    except FileNotFoundError:
+                        continue
+                    if (m.get("status_execucao") == "concluida"
+                            and m["estrategia"]["nome"] == estrategia
+                            and m["prompt"]["variante"] == variante
+                            and float(m["temperatura"]) == float(temperatura)
+                            and m["repeticao"] == repeticao
+                            and m["n_docs"] == len(documentos)
+                            and sorted(m.get("arquivos", arquivos)) == arquivos):
+                        return run_id
+                return None
+
             def rodar(estrategia, variante, temperatura, repeticao, documentos):
+                if REUSAR_EXECUCOES:
+                    run_id = execucao_gravada(estrategia, variante, temperatura, repeticao, documentos)
+                    if run_id is not None:
+                        res = RunResult(run_id, store.load(run_id), store.manifest(run_id))
+                        print(f"reutilizado: {run_id}: {res.status_counts()}")
+                        return res
                 params = GenerationParams(temperature=temperatura, seed=settings.seed,
                                           max_new_tokens=settings.max_new_tokens)
                 runner = ExtractionRunner(client, selectors[estrategia], build_prompt(variante), params, store)
@@ -436,7 +510,7 @@ def cells(integrantes: list[str]) -> list[nbformat.NotebookNode]:
         ),
         code(
             """
-            from ficha.audit import build_audit_summary
+            from ficha.audit import RULE_V1, RULE_V2, build_audit_summary
             from ficha.report.assemble import fidelity_block, input_block, stability_block, temperature_block
 
             resumo = build_audit_summary(
@@ -446,6 +520,7 @@ def cells(integrantes: list[str]) -> list[nbformat.NotebookNode]:
                 t_alt=execucoes["temperatura_alt"].records,
                 prompt_runs=(execucoes["principal"].records, execucoes["prompt_alt"].records),
                 limitacao_gabarito=GABARITO_LIMITACAO,
+                rule=RULE_V2,  # regra final — ver a calibração na seção 9
             )
             tabelas = resumo.tables()
 
@@ -514,6 +589,35 @@ def cells(integrantes: list[str]) -> list[nbformat.NotebookNode]:
             `confianca` nunca vem do modelo nem "do olho": é função determinística das verificações
             acima (`ficha.audit.ConfidenceRule`). Cada ficha carrega os **motivos** que a
             impediram de ter nível mais alto — é deles que sai a lista de fichas não defensáveis.
+
+            **Duas versões da regra, e por que a final é a v2.** A v1 (estrita) rebaixava uma ficha
+            se *qualquer* campo mudasse entre as duas estratégias de entrada. Os dados mostram que
+            isso mede redação, não confiabilidade: entre estratégias, a similaridade média dos
+            campos de texto livre fica em torno de 0,5 (entradas diferentes produzem paráfrases e
+            evidências de outras páginas por construção), enquanto entre repetições com a mesma
+            entrada é 1,00. A v2 compara estratégias só pela **discordância categórica** — a
+            limitação declarada numa e `null` na outra — e mantém a comparação exata entre
+            repetições. A tabela abaixo mostra as duas distribuições lado a lado; a tabela final e
+            o PDF usam a v2. A calibração foi decidida depois de ver os dados reais, e isso é
+            declarado aqui e no relatório.
+            """
+        ),
+        code(
+            """
+            from ficha.audit import build_final_fichas, confidence_distribution
+            from ficha.report.assemble import mean_text_similarity
+
+            args_regra = (execucoes["principal"].records, execucoes["repeticao"].records,
+                          execucoes["entrada_alt"].records)
+            DISTRIBUICOES = {
+                "v1 estrita": confidence_distribution(build_final_fichas(*args_regra, RULE_V1)),
+                "v2 categórica (final)": confidence_distribution(build_final_fichas(*args_regra, RULE_V2)),
+            }
+            display(pd.DataFrame(DISTRIBUICOES).rename_axis("confianca"))
+            sim_entrada = mean_text_similarity(resumo.input_effect.diff.field_mean_similarity)
+            sim_repeticao = mean_text_similarity(resumo.stability.diff.field_mean_similarity)
+            print(f"Similaridade média dos campos de texto livre: entre estratégias {sim_entrada:.2f} · "
+                  f"entre repetições {sim_repeticao:.2f}")
             """
         ),
         code(
@@ -604,7 +708,15 @@ def cells(integrantes: list[str]) -> list[nbformat.NotebookNode]:
             from ficha.report.assemble import Narrative, build_report_content
             from ficha.report.pdf import ReportTooLongError
 
-            narrativa = Narrative()  # edite aqui: Narrative(conclusoes={"fidelidade": "..."}, ...)
+            narrativa = Narrative(  # edite aqui; conclusoes={"fidelidade": "..."} sobrescreve blocos
+                cobertura_limitacao=COBERTURA_LIMITACAO,
+                nota_limitacao=(
+                    "Sem gabarito manual não dá para separar abstenção correta de omissão; a "
+                    "heurística de vocabulário de limitação teve falsos positivos confirmados "
+                    "(título 'Scope, and Limitations'; parágrafo sobre limitações da IA "
+                    "generativa) e por isso não entra na regra."
+                ) if MODO == "real" else "",
+            )
             gpu = describe_gpu()
             MODELO_DECLARADO = client.model_name + (f" · {gpu['nome']}" if gpu else "")
             if MODO == "ensaio":
@@ -618,6 +730,7 @@ def cells(integrantes: list[str]) -> list[nbformat.NotebookNode]:
                 strategy_table=resumo_estrategias[["caracteres_medios", "tokens_medios", "tokens_corpus"]],
                 narrative=narrativa,
                 figuras=[fig_prompts_relatorio],
+                rule_distributions=DISTRIBUICOES,
             )
             pdf_path = settings.outputs_dir / f"{BASENAME}.pdf"
             try:

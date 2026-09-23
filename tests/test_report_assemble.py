@@ -78,26 +78,104 @@ def test_overview_frames(docs: list[Document]) -> None:
     assert list(summary.index) == ["first_pages", "keyword"]
 
 
-def test_fidelity_block_separates_invented_from_failed() -> None:
+def _fid(arquivo: str, found: bool, method: str, claimed: int = 1, page: int | None = 1):
+    from ficha.audit.fidelity import FidelityResult
+
+    return FidelityResult(
+        arquivo, "r", found, 1.0 if found else 0.47, method, claimed, page, page == claimed, 0.9
+    )  # type: ignore[arg-type]
+
+
+def _fake_summary(results, trechos):  # type: ignore[no-untyped-def]
     from types import SimpleNamespace
 
-    from ficha.audit.fidelity import FidelityResult
-    from ficha.report.assemble import fidelity_block
+    from ficha.types import ParseStatus
 
-    def res(arquivo: str, method: str) -> FidelityResult:
-        found = method != "none" and arquivo != "b.pdf"
-        return FidelityResult(arquivo, "r", found, 1.0 if found else 0.4, method, 1, 1, found, 0.9)  # type: ignore[arg-type]
-
-    results = [res("a.pdf", "exact"), res("b.pdf", "fuzzy"), res("c.pdf", "none")]
     fid = SimpleNamespace(
-        n=3,
-        n_found=1,
-        rate_found=1 / 3,
-        n_page_ok=1,
-        by_method={"exact": 1, "fuzzy": 1, "none": 1},
+        n=len(results),
+        n_found=sum(r.found for r in results),
+        rate_found=sum(r.found for r in results) / len(results),
+        n_page_ok=sum(r.page_ok for r in results),
+        by_method={"exact": 0, "fuzzy": 0, "none": 0},
+        results=results,
         failures=lambda: [r for r in results if not r.found],
     )
-    block = fidelity_block(SimpleNamespace(fidelity=fid))  # type: ignore[arg-type]
-    assert "inventados: b.pdf" in block.conclusao
-    assert "sem ficha válida" in block.conclusao and "c.pdf" in block.conclusao
-    assert "c.pdf" not in block.conclusao.split("inventados:")[1].split(".")[0]
+    fichas = [
+        SimpleNamespace(
+            arquivo=a,
+            failed=False,
+            parse_status=ParseStatus.OK,
+            ficha=SimpleNamespace(evidencia=SimpleNamespace(trecho=t)),
+        )
+        for a, t in trechos.items()
+    ]
+    return SimpleNamespace(fidelity=fid, fichas=fichas)
+
+
+LEAK = (
+    "Forecast accuracy is measured with the weighted mean absolute percentage error (WMAPE) "
+    "over a 13-week horizon."
+)
+
+
+def test_fidelity_block_separates_invented_wrong_page_and_failed() -> None:
+    from ficha.report.assemble import fidelity_block
+
+    results = [
+        _fid("08_Leka_2019_Comparison_III.pdf", False, "fuzzy", 5, None),
+        _fid("11_Jarolim_2023_PINN.pdf", True, "exact", 15, 16),
+        _fid("c_sem.pdf", False, "none", 1, None),
+        _fid("ok_2020_x.pdf", True, "exact"),
+    ]
+    summary = _fake_summary(results, {"08_Leka_2019_Comparison_III.pdf": LEAK})
+    text = fidelity_block(summary).conclusao  # type: ignore[arg-type]
+    assert "08_Leka_2019 (cópia do exemplo few-shot do prompt)" in text
+    assert "11_Jarolim_2023: declarada 15, encontrada 16" in text
+    assert "sem ficha válida" in text and "c_sem" in text
+
+
+def test_few_shot_leak_and_highlight() -> None:
+    from ficha.report.assemble import few_shot_leak, invention_highlight, short_name
+
+    assert few_shot_leak(LEAK) is not None
+    assert few_shot_leak("We use the MIMIC-IV database, covering 2008 to 2019.") is None
+    assert short_name("D04_Jiao_2020_Flare_Intensity.pdf") == "D04_Jiao_2020"
+    assert short_name("artigo_01.pdf") == "artigo_01"
+    summary = _fake_summary(
+        [_fid("08_Leka_2019_X_Y.pdf", False, "fuzzy", 5, None)], {"08_Leka_2019_X_Y.pdf": LEAK}
+    )
+    text = invention_highlight(summary)  # type: ignore[arg-type]
+    assert "EXEMPLO few-shot" in text and "13-week" in text and "BAIXA" in text
+    assert invention_highlight(_fake_summary([_fid("a.pdf", True, "exact")], {})) == ""  # type: ignore[arg-type]
+
+
+def test_calibration_and_distributions(rehearsal) -> None:  # type: ignore[no-untyped-def]
+    from ficha.report.assemble import calibration_sentence, mean_text_similarity
+
+    assert mean_text_similarity({"problema": 0.5, "dados": 0.3, "limitacao": 1.0}) == 0.4
+    text = calibration_sentence(
+        rehearsal.summary, {"v1 estrita": {"alta": 0, "media": 2, "baixa": 17}}
+    )
+    assert "v1 estrita: alta 0/média 2/baixa 17" in text
+    assert "entre estratégias" in text and "entre repetições" in text
+
+
+def test_report_has_highlight_and_coverage(rehearsal, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    import pymupdf
+
+    nar = Narrative(cobertura_limitacao="Só 9 de 62 frases chegaram.", nota_limitacao="Nota X.")
+    content = build_report_content(
+        integrantes=["Ana Souza"],
+        modelo="fake",
+        summary=rehearsal.summary,
+        cost=rehearsal.cost,
+        narrative=nar,
+        rule_distributions={"v1": {"alta": 1, "media": 1, "baixa": 2}},
+    )
+    assert content.estrategia_evidencia.startswith("Só 9")
+    assert content.resultados_auditoria.entrada.conclusao.endswith("Nota X.")
+    out = build_report_pdf(content, tmp_path / "r.pdf")
+    assert count_pages(out) <= 3
+    with pymupdf.open(out) as pdf:
+        text = " ".join(p.get_text() for p in pdf)
+    assert "Evidência medida" in " ".join(text.split())

@@ -82,26 +82,39 @@ class ConfidenceRule:
         return "v1" if self.input_effect_mode == "strict" else "v2"
 
     def describe(self) -> str:
-        """Texto da regra, em português, para o relatório."""
+        """Texto da regra, em português, para o relatório (depende do modo ativo)."""
         a, m = self.max_changed_fields_for_alta, self.max_changed_fields_for_media
         pag = (
-            "ou o trecho foi encontrado numa página diferente da declarada em evidencia.pagina; "
+            ", ou o trecho foi encontrado numa página diferente da declarada em evidencia.pagina"
             if self.require_page_ok
             else ""
         )
-        lim = (
-            "\n- No máximo MEDIA se o campo limitacao veio preenchido mas o texto enviado não "
-            "contém nenhum termo de limitação (limitation, shortcoming, drawback, caveat, future "
-            "work, threats to validity...), sinal de limitação possivelmente inventada."
-            if self.check_limitacao
-            else ""
-        )
-        if self.input_effect_mode == "strict":
+        strict = self.input_effect_mode == "strict"
+        if strict:
+            baixa_cmp = f"mais de {m} campos mudaram entre as duas repetições ou entre as duas "
+            baixa_cmp += "estratégias de entrada"
+            media_cmp = (
+                f"entre {a + 1} e {m} campos mudaram em alguma das comparações (repetição ou "
+                "estratégia)"
+            )
+            alta_cmp = (
+                f"no máximo {a} campo(s) mudou(aram) tanto entre repetições quanto entre "
+                "estratégias"
+            )
             modo = (
                 "Modo de comparação entre estratégias: strict (v1) — todo campo diferente após "
                 "normalização conta como mudança, também entre estratégias de entrada."
             )
         else:
+            baixa_cmp = f"mais de {m} campos mudaram entre as duas repetições (mesma entrada)"
+            media_cmp = (
+                f"entre {a + 1} e {m} campos mudaram entre as repetições, ou limitacao é null "
+                "numa estratégia de entrada e preenchida na outra (discordância categórica)"
+            )
+            alta_cmp = (
+                f"no máximo {a} campo(s) mudou(aram) entre repetições e não há discordância "
+                "categórica entre estratégias"
+            )
             modo = (
                 "Modo de comparação entre estratégias: categorical (v2) — entre estratégias só "
                 "conta como mudança a discordância categórica em limitacao (null de um lado, "
@@ -109,9 +122,13 @@ class ConfidenceRule:
                 "contam. Entre repetições (mesma entrada) a comparação continua exata. "
                 f"{CALIBRACAO_ENTRADA}"
             )
-        null_note = (
-            "\n- limitacao null com a palavra 'limitation' no contexto NÃO rebaixa: a heurística "
-            "teve falsos positivos (títulos e uso genérico da palavra)."
+        lim = (
+            "\n- No máximo MEDIA se o campo limitacao veio preenchido mas o texto enviado não "
+            "contém nenhum termo de limitação (limitation, shortcoming, drawback, caveat, future "
+            "work, threats to validity...), sinal de limitação possivelmente inventada. "
+            "O caso inverso (limitacao null com a palavra 'limitation' no contexto) NÃO "
+            "rebaixa: a heurística teve falsos positivos (títulos de seção e uso genérico da "
+            "palavra)."
             if self.check_limitacao
             else ""
         )
@@ -120,19 +137,15 @@ class ConfidenceRule:
             "MENOR entre os limites abaixo):\n"
             "- BAIXA se a extração falhou (nenhum JSON válido segundo o esquema), "
             "ou o trecho de evidência não foi encontrado no texto enviado ao modelo "
-            f"(similaridade partial_ratio normalizada < {self.fidelity_threshold:.2f}), "
-            f"{pag}"
-            f"ou mais de {m} campos mudaram entre as duas repetições ou entre as duas "
-            "estratégias de entrada.\n"
-            f"- MEDIA se a evidência passou, mas entre {a + 1} e {m} campos mudaram em alguma das "
-            "comparações (repetição ou estratégia), ou se alguma comparação não pôde ser feita "
-            "(ausente ou sem ficha válida do outro lado): o que não foi verificado não recebe "
-            f"ALTA.{lim}\n"
-            f"- ALTA somente se a evidência foi encontrada na página declarada e no máximo {a} "
-            "campo(s) mudou(aram) tanto entre repetições quanto entre estratégias.\n"
+            f"(similaridade partial_ratio normalizada < {self.fidelity_threshold:.2f})"
+            f"{pag}, ou {baixa_cmp}.\n"
+            f"- MEDIA se a evidência passou, mas {media_cmp}, ou se alguma comparação não pôde "
+            "ser feita (ausente ou sem ficha válida do outro lado): o que não foi verificado "
+            f"não recebe ALTA.{lim}\n"
+            f"- ALTA somente se a evidência foi encontrada na página declarada e {alta_cmp}.\n"
             "Campos comparados: problema, dados, metodo, metrica, limitacao, evidencia.trecho, "
             "evidencia.pagina; textos iguais após normalização tipográfica (NFKC, minúsculas, "
-            f"espaços, aspas e hífens).{null_note}\n{modo}"
+            f"espaços, aspas e hífens).\n{modo}"
         )
 
     def assign(

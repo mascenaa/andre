@@ -22,6 +22,7 @@ Decisões:
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Sequence
 
 import numpy as np
@@ -47,6 +48,9 @@ DEFAULT_QUERIES: tuple[str, ...] = (
     "principais resultados e contribuições do artigo",
 )
 """Consultas padrão, em português, cobrindo os seis campos da ficha."""
+
+CACHE_SIZE = 64
+"""Quantos artigos manter com embeddings de chunks em memória (≈ 19 artigos reais)."""
 
 
 class SemanticSelector:
@@ -75,6 +79,7 @@ class SemanticSelector:
         self.max_chars = max_chars
         self.merge_overlaps = merge_overlaps
         self._query_vecs: np.ndarray | None = None
+        self._chunk_cache: dict[str, np.ndarray] = {}
 
     @property
     def name(self) -> str:
@@ -85,7 +90,8 @@ class SemanticSelector:
             self._query_vecs = self.embedder.embed(list(self.queries))
         return self._query_vecs
 
-    def _params(self, n_total: int, n_selected: int) -> dict[str, object]:
+    def describe(self) -> dict[str, object]:
+        """Parâmetros da estratégia (sem contagens), para registro em ``Context.params``."""
         return {
             "embedder": self.embedder.name,
             "top_k": self.top_k,
@@ -94,9 +100,21 @@ class SemanticSelector:
             "max_chars": self.max_chars,
             "merge_overlaps": self.merge_overlaps,
             "queries": list(self.queries),
-            "n_chunks_total": n_total,
-            "n_chunks_selected": n_selected,
         }
+
+    def _params(self, n_total: int, n_selected: int) -> dict[str, object]:
+        return {**self.describe(), "n_chunks_total": n_total, "n_chunks_selected": n_selected}
+
+    def _embed_chunks(self, chunks: list[Chunk]) -> np.ndarray:
+        """Vetores dos chunks, com cache por conteúdo (o ``hybrid`` e a 4.4c reusam)."""
+        key = hashlib.sha256(
+            "\x00".join(f"{c.page}:{c.start}:{c.text}" for c in chunks).encode()
+        ).hexdigest()
+        if key not in self._chunk_cache:
+            if len(self._chunk_cache) >= CACHE_SIZE:
+                self._chunk_cache.pop(next(iter(self._chunk_cache)))
+            self._chunk_cache[key] = self.embedder.embed([c.text for c in chunks])
+        return self._chunk_cache[key]
 
     def rank(self, doc: Document) -> list[Chunk]:
         """Chunks escolhidos (antes de orçamento e união), com ``score`` e ``label`` preenchidos."""
@@ -105,7 +123,7 @@ class SemanticSelector:
     def _rank(self, chunks: list[Chunk]) -> list[Chunk]:
         if not chunks:
             return []
-        sims = self._queries_matrix() @ self.embedder.embed([c.text for c in chunks]).T
+        sims = self._queries_matrix() @ self._embed_chunks(chunks).T
         k = min(self.top_k, len(chunks))
         best: dict[int, tuple[float, int]] = {}  # chunk -> (melhor score, consulta)
         for qi in range(sims.shape[0]):
