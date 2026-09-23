@@ -220,6 +220,12 @@ class QwenLocalClient:
                     "(FICHA_QUANTIZE_4BIT=true) ou um modelo menor."
                 )
 
+        # Apple Silicon (MPS): sem CUDA, mas com aceleração e memória unificada. Carregar em
+        # fp16 é o que faz o 3B caber em 16 GB (float32 dobraria para ~12 GB só de pesos).
+        mps = bool(getattr(torch.backends, "mps", None) and torch.backends.mps.is_available())
+        if self.device is None and gpu is None and mps and not self.quantize_4bit:
+            self.device = "mps"
+
         load_kwargs: dict[str, Any] = {}
         if self.quantize_4bit:
             load_kwargs["quantization_config"] = tf.BitsAndBytesConfig(
@@ -228,7 +234,8 @@ class QwenLocalClient:
                 bnb_4bit_quant_type="nf4",
             )
         else:
-            load_kwargs["torch_dtype"] = torch.float16 if gpu is not None else torch.float32
+            half = gpu is not None or self.device == "mps"
+            load_kwargs["dtype"] = torch.float16 if half else torch.float32
 
         if self.device is None:
             load_kwargs["device_map"] = "auto"
